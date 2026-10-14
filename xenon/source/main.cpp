@@ -7,6 +7,7 @@
  * (see input.cpp).
  */
 #include <ppc/timebase.h>
+#include <xenon_soc/xenon_power.h>
 
 #include "gfx.h"
 #include "input.h"
@@ -23,6 +24,9 @@ int main(int argc, char **argv) {
     if (!Gfx_Ready(gfx)) {
         for (;;) { }
     }
+
+    /* Run the CPU at full clock (the bootloader may leave it throttled). */
+    xenon_make_it_faster(XENON_SPEED_FULL);
 
     Input_Init();
 

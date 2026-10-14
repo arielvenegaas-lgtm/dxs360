@@ -70,6 +70,11 @@ docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
 
 Launch: rename/copy to `AuroraBricks.elf` and run it from Aurora's File Manager.
 
+> **Controller:** input uses libXenon's USB stack (wired pads). A
+> *play-and-charge* cable only charges — use a **wired** controller, or the
+> Xbox 360 *wireless* PC receiver. With no pad detected the game runs in
+> autopilot (a self-playing demo), which can look like frozen input.
+
 ---
 
 ## Path B — FreeChainXenon (genuine `.xex` bring-up)
@@ -184,6 +189,10 @@ Paths A and B **can** be built in GitHub Actions / on Linux; Path C cannot.
 - Paths A and B are built by CI on every push (see the badge/actions). The
   libXenon ELF is verified to be `elf32-powerpc`; the FCX output is verified to
   be genuine `XEX2` with an embedded ELF.
+- The FreeChainXenon `.xex` is an **experimental bring-up**: it deliberately
+  calls `VdDisplayFatalError` (a fatal-error path), so on real hardware it can
+  show a black screen and turn the front LED **red**. It is *not* the game, and
+  it should not be launched repeatedly on a console you care about.
 - None of the paths has been run on physical hardware by the author. Treat the
   first launch as bring-up.
 - Path C source is written against the documented XDK/D3D9 API and

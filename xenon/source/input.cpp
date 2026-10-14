@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include <input/input.h>
+#include <usb/usbmain.h>
 
 #include "input.h"
 
@@ -35,9 +36,18 @@ void Input_Init(void) {
     memset(g_cur, 0, sizeof(g_cur));
     memset(g_prev, 0, sizeof(g_prev));
     memset(g_seen, 0, sizeof(g_seen));
+
+    /* Bring up libXenon's USB stack. Without this the pad driver is never
+     * serviced, get_controller_data() never reports a controller, and the
+     * game stays in autopilot. */
+    usb_init();
+    usb_do_poll();
 }
 
 void Input_Poll(void) {
+    /* Service USB every frame so reports arrive and hotplug is detected. */
+    usb_do_poll();
+
     for (int i = 0; i < PAD_COUNT; ++i) {
         struct controller_data_s d;
         memset(&d, 0, sizeof(d));
