@@ -48,6 +48,17 @@ ${TOOLCHAIN_NAME_PREFIX}pe-ld --accept-unknown-input-arch \
     -o "${PROGRAM_NAME}.exe" fcxelfldr.o
 
 # Turn the PE into an XEX.
-synthxex --skip-machine-check --input "${PROGRAM_NAME}.exe" --output "${PROGRAM_NAME}.xex"
+#
+# SynthXEX 0.0.2 has a stack-VLA overflow in its SHA-1 header pass that
+# segfaults *after* the XEX has been written (fixed upstream in 0.0.5, which
+# this project builds). Tolerate a non-zero exit here and validate the output
+# instead of trusting the exit code.
+synthxex --skip-machine-check --input "${PROGRAM_NAME}.exe" --output "${PROGRAM_NAME}.xex" \
+    || echo "warning: synthxex exited with $? - validating output anyway" >&2
+
+if [ ! -s "${PROGRAM_NAME}.xex" ]; then
+    echo "error: synthxex did not produce ${PROGRAM_NAME}.xex" >&2
+    exit 1
+fi
 
 echo "built ${PROGRAM_NAME}.xex"

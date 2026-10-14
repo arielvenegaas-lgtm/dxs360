@@ -25,7 +25,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.fcx
-          key: fcx-toolchain-${{ runner.os }}-v2
+          key: fcx-toolchain-${{ runner.os }}-v3
 
       - name: Install build dependencies
         if: steps.cache-fcx.outputs.cache-hit != 'true'
@@ -58,20 +58,25 @@ jobs:
           # (libm/math/e_fmod.c: "unrecognizable insn"), so drop the newlib and
           # second-GCC-pass blocks, keeping the SynthXEX + support-file steps.
           sed -i '/[Bb]uild newlib/,/[Bb]uild SynthXEX/{/[Bb]uild SynthXEX/!d}' build-fcx-toolchain
+          # The installer pins SynthXEX 0.0.2, whose SHA-1 header pass has a
+          # stack-VLA overflow (uint8_t buf[remainingSize]) that segfaults after
+          # writing the XEX. 0.0.5 fixes it (heap allocation) and bundles its
+          # own nettle, so build 0.0.5 instead.
+          sed -i 's/synthxex-0\.0\.2/synthxex-0.0.5/' build-fcx-toolchain
           chmod +x build-fcx-toolchain
           export PREFIX="$GITHUB_WORKSPACE/.fcx"
           ./build-fcx-toolchain toolchain
           echo "== toolchain =="
           ls -la "$PREFIX/bin" | head -40
 
-      # Save the (expensive, ~40 min) toolchain as soon as it is built, so a
+      # Save the (expensive, ~25 min) toolchain as soon as it is built, so a
       # later failure in the XEX steps does not force a full rebuild.
       - name: Save FreeChainXenon toolchain cache
         if: steps.cache-fcx.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.fcx
-          key: fcx-toolchain-${{ runner.os }}-v2
+          key: fcx-toolchain-${{ runner.os }}-v3
 
       - name: Check toolchain is present
         run: |
@@ -81,6 +86,7 @@ jobs:
           test -d "$PREFIX/elfloader"
           "$PREFIX/bin/powerpc64-fcx-xenon-gcc" --version
           ls "$PREFIX/bin/synthxex"
+          "$PREFIX/bin/synthxex" --version || true
 
       - name: Build bring-up XEX
         run: |
@@ -90,37 +96,6 @@ jobs:
           cd fcx
           sh -x ./build.sh
           ls -l AuroraBricks.elf AuroraBricks.exe AuroraBricks.xex
-
-      - name: FCX link diagnostics
-        if: always()
-        continue-on-error: true
-        run: |
-          export FREECHAINXENON="$GITHUB_WORKSPACE/.fcx"
-          export PATH="$FREECHAINXENON/bin:$FREECHAINXENON/usr/bin:$PATH"
-          W="$RUNNER_TEMP/diag"; rm -rf "$W"; mkdir -p "$W"; cd "$W"
-          cp "$GITHUB_WORKSPACE/fcx/crt0.s" "$GITHUB_WORKSPACE/fcx/bringup.c" .
-          set +e
-          echo "=== 1. cpp lds ==="
-          powerpc64-fcx-xenon-cpp -DBASE_ADDR=0x82000000 -DALIGNMENT=0x10000 -o fcxlds.lds "$FREECHAINXENON/ldscripts/fcxlds.lds.tmpl"; echo "rc=$?"
-          echo "=== 2. assemble crt0.s ==="
-          powerpc64-fcx-xenon-gcc -c crt0.s -o crt0.o -Wa,-mregnames,-a32,-mppc64 -m32 -mpowerpc64; echo "rc=$?"
-          echo "=== 3. compile bringup.c ==="
-          powerpc64-fcx-xenon-gcc -c bringup.c -o bringup.o -Wa,-mregnames,-a32,-mppc64 -m32 -mpowerpc64; echo "rc=$?"
-          echo "=== 4. link via gcc -v ==="
-          powerpc64-fcx-xenon-gcc -o test.elf crt0.o bringup.o -Wl,-T,fcxlds.lds -m32 -mpowerpc64 -nostdlib -v 2>&1 | tail -50; echo "rc=${PIPESTATUS[0]}"
-          echo "=== 5. ld default emulation ==="
-          powerpc64-fcx-xenon-ld -T fcxlds.lds -o test2.elf crt0.o bringup.o; echo "rc=$?"
-          echo "=== 6. ld -m elf32ppc ==="
-          powerpc64-fcx-xenon-ld -m elf32ppc -T fcxlds.lds -o test3.elf crt0.o bringup.o; echo "rc=$?"
-          echo "=== 7. gdb backtrace on direct ld ==="
-          sudo apt-get install -y gdb >/dev/null 2>&1 || true
-          gdb -q -batch -ex run -ex bt --args powerpc64-fcx-xenon-ld -T fcxlds.lds -o testg.elf crt0.o bringup.o 2>&1 | tail -40
-          echo "=== 8. control: upstream FCX-Test-2 ==="
-          cd "$RUNNER_TEMP"; rm -rf fcxctl
-          git clone --depth 1 https://github.com/FreeChainXenon/FCX-Test-2 fcxctl
-          ( cd fcxctl && sh ./build.sh ); echo "control rc=$?"
-          ls -la "$RUNNER_TEMP/fcxctl"/*.xex 2>&1
-          echo "=== diagnostics done ==="
 
       - name: Verify it is a genuine XEX2 (and embeds a PPC ELF)
         run: |
