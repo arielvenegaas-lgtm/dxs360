@@ -25,7 +25,13 @@ INCLUDES := ../src
 
 # Recursive (=) on purpose: $(INCLUDE) is only defined in the sub-make, where
 # it is inherited from the exported environment of the top-level make.
-CFLAGS   = -g -O3 -funroll-loops -Wall $(MACHDEP) $(INCLUDE)
+#
+# Keep -O2 and never use -O3 here: $(MACHDEP) adds -maltivec, and GCC's
+# auto-vectorizer (turned on at -O3) emits standard AltiVec/VMX code that the
+# Xenon's non-standard VMX128 ISA executes incorrectly, corrupting the
+# framebuffer (the toolchain itself disables many AltiVec insns in altivec.md).
+# -fno-tree-vectorize guarantees no such code is generated at any -O level.
+CFLAGS   = -g -O2 -fno-tree-vectorize -Wall $(MACHDEP) $(INCLUDE)
 CXXFLAGS = $(CFLAGS)
 
 LDFLAGS  = -g $(MACHDEP) -Wl,--gc-sections -Wl,-Map,$(notdir $@).map
