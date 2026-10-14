@@ -11,7 +11,33 @@
 #include <input/input.h>
 #include <usb/usbmain.h>
 
+/* libXenon's usb_do_poll() does two things: it services the USB bus daemons
+ * (usb_poll/usb_daemon, which is what actually delivers controller reports) and
+ * it calls USBStorage_Init(), which scans every EHCI host port on every call.
+ * That scan can hit ehci_msleep(100) whenever a USB device other than mass
+ * storage is attached, stalling the game loop by 100+ ms per frame (~8 FPS).
+ *
+ * We only need controller input, so we drive the bus daemons ourselves and skip
+ * the mass-storage probe entirely. usb_buses[]/usb_buscnt are globals defined in
+ * libxenon's usbmain.c and are not declared in any header, so we declare them
+ * here; usb_poll()/usb_daemon()/usbbus_t come from <usb/usbd.h>. */
+extern "C" {
+#include <usb/usbd.h>
+extern int       usb_buscnt;
+extern usbbus_t *usb_buses[];
+}
+
 #include "input.h"
+
+static void UsbPollControllers(void) {
+    for (int i = 0; i < usb_buscnt; ++i) {
+        usbbus_t *bus = usb_buses[i];
+        if (bus) {
+            usb_poll(bus);
+            usb_daemon(bus);
+        }
+    }
+}
 
 #define PAD_COUNT 4
 
@@ -41,12 +67,12 @@ void Input_Init(void) {
      * serviced, get_controller_data() never reports a controller, and the
      * game stays in autopilot. */
     usb_init();
-    usb_do_poll();
+    UsbPollControllers();
 }
 
 void Input_Poll(void) {
     /* Service USB every frame so reports arrive and hotplug is detected. */
-    usb_do_poll();
+    UsbPollControllers();
 
     for (int i = 0; i < PAD_COUNT; ++i) {
         struct controller_data_s d;
