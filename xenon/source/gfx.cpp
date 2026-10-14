@@ -18,7 +18,13 @@
 
 #include <xenos/xenos.h>
 #include <console/console.h>
+
+/* libXenon's cache.h declares memdcbst() with C linkage only (no extern "C"
+ * guard), so we must include it inside an extern "C" block when building C++,
+ * otherwise the reference is name-mangled and fails to link. */
+extern "C" {
 #include <ppc/cache.h>
+}
 
 #include "gfx.h"
 #include "font.h"
@@ -42,12 +48,10 @@ static uint32_t  g_shadow[GFX_MAX_W * GFX_MAX_H];
 /*
  * libxenon's console.c reads the scan-out surface address and size directly
  * from the GPU's display registers (the "struct ati_info" at 0xec806100 is
- * really just an overlay over D1GRPH_* MMIO). We mirror that here.
+ * really just an overlay over D1GRPH_* MMIO). We mirror that here, reusing the
+ * D1GRPH_* offsets that <xenos/xenos.h> already defines.
  */
 #define XENOS_REG(i) (*(volatile uint32_t *)(uintptr_t)(0xec800000u + (i)))
-#define D1GRPH_PRIMARY_SURFACE_ADDRESS 0x6110u
-#define D1GRPH_X_END                   0x6134u
-#define D1GRPH_Y_END                   0x6138u
 
 static uint32_t RegRead(uint32_t off) { return XENOS_REG(off); }
 
