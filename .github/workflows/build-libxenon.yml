@@ -47,11 +47,12 @@ jobs:
           mkdir -p dist/AuroraBricks
           cp xenon/aurora_bricks.elf32 dist/AuroraBricks/AuroraBricks.elf
           cp packaging/AuroraBricks-libxenon-READ_ME.txt dist/AuroraBricks/READ_ME.txt
-          ( cd dist && zip -r ../AuroraBricks-libxenon.zip AuroraBricks )
           ls -l dist/AuroraBricks
 
+      # Upload the directory (not a pre-made .zip) so the downloaded artifact
+      # isn't double-zipped: it contains AuroraBricks.elf and READ_ME.txt.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AuroraBricks-libxenon
-          path: AuroraBricks-libxenon.zip
+          path: dist/AuroraBricks

@@ -110,11 +110,12 @@ jobs:
           mkdir -p dist/AuroraBricks-XEX-Bringup
           cp fcx/AuroraBricks.xex dist/AuroraBricks-XEX-Bringup/default.xex
           cp packaging/AuroraBricks-XEX-Bringup-READ_ME.txt dist/AuroraBricks-XEX-Bringup/READ_ME.txt
-          ( cd dist && zip -r ../AuroraBricks-XEX-Bringup.zip AuroraBricks-XEX-Bringup )
           ls -l dist/AuroraBricks-XEX-Bringup
 
+      # Upload the directory (not a pre-made .zip) so the downloaded artifact
+      # isn't double-zipped: it contains default.xex and READ_ME.txt.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AuroraBricks-XEX-Bringup
-          path: AuroraBricks-XEX-Bringup.zip
+          path: dist/AuroraBricks-XEX-Bringup

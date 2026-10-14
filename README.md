@@ -86,8 +86,11 @@ genuine XEX built here will actually execute on the console. The ELF is embedded
 inside the PE as a `.elf` section, so the XEX is self-contained.
 
 - CI (`build-fcx`): clones the GitHub mirrors of the FreeChainXenon repos,
-  patches the toolchain's hard-coded `/opt/local` prefixes, builds the toolchain
-  (cached), then runs `fcx/build.sh`.
+  patches the toolchain's hard-coded `/opt/local` prefixes, drops newlib and the
+  second GCC pass (unused, since `fcx/build.sh` links `-nostdlib`), pins
+  `SynthXEX` to `0.0.5` (0.0.2 has a stack-VLA overflow in its SHA-1 pass that
+  segfaults *after* writing the XEX), builds the toolchain (cached in Actions),
+  then runs `fcx/build.sh`.
 - `fcx/crt0.s` is vendored from `FCX-Test-2` (MPL-2.0). `fcx/bringup.c` and
   `fcx/build.sh` are this project's.
 
