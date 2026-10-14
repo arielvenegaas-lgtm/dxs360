@@ -18,11 +18,16 @@
  * storage is attached, stalling the game loop by 100+ ms per frame (~8 FPS).
  *
  * We only need controller input, so we drive the bus daemons ourselves and skip
- * the mass-storage probe entirely. usb_buses[]/usb_buscnt are globals defined in
- * libxenon's usbmain.c and are not declared in any header, so we declare them
- * here; usb_poll()/usb_daemon()/usbbus_t come from <usb/usbd.h>. */
+ * the mass-storage probe entirely. usb_poll()/usb_daemon() are declared in
+ * <usb/usbd.h>, but that header is not self-contained (it needs CFE's queue_t/
+ * physaddr_t), so we forward-declare the opaque bus type and the two functions
+ * ourselves. usb_buses[]/usb_buscnt are globals defined in libxenon's usbmain.c
+ * and are not declared in any header either. */
 extern "C" {
-#include <usb/usbd.h>
+struct usbbus_s;                      /* opaque; real definition in <usb/usbd.h> */
+typedef struct usbbus_s usbbus_t;
+void usb_poll(usbbus_t *bus);
+void usb_daemon(usbbus_t *bus);
 extern int       usb_buscnt;
 extern usbbus_t *usb_buses[];
 }
