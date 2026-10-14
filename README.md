@@ -1,23 +1,33 @@
 # Aurora Bricks
 
-A 2D Breakout-style game for the **Xbox 360**, built as a real **title-mode
-`.xex`** so it launches directly from **Aurora** (or FSD/XeXMenu) on RGH/JTAG
-consoles — no XeLL, no `.elf`.
+A 2D Breakout-style game for the **Xbox 360**. This repository can build it
+three ways — two of them entirely with **open-source toolchains** that need no
+Microsoft XDK and run in **GitHub Actions**:
 
-- **Target:** Xbox 360, retail-runnable unsigned XEX (dev-signed with `XexTool`).
-- **Toolchain:** [RXDK-360](https://github.com/Team-Resurgent/RXDK360) (Visual
-  Studio 2022/2026 platform) + your own licensed **Xbox 360 XDK**.
-- **Graphics:** D3D9. The game renders into a CPU framebuffer, which is
-  tile-uploaded to a texture and blitted fullscreen with a precompiled shader.
-- **Input:** XInput controllers (with an autopilot demo when no pad is present).
+| Path | Toolchain | Output | Playable? | Launches from |
+|---|---|---|---|---|
+| **A** | [libXenon](https://github.com/Free60Project/libxenon) | `AuroraBricks.elf` | **Yes** (graphics + input) | Aurora File Manager / XeLL |
+| **B** | [FreeChainXenon](https://github.com/FreeChainXenon) | `default.xex` (genuine XEX2) | Bring-up only | Aurora File Manager |
+| **C** | RXDK-360 + licensed XDK | `default.xex` (genuine XEX2) | Yes | Aurora / FSD / XeXMenu |
 
-> **Read this first.** This project compiles to a genuine Xbox 360 title XEX.
-> Producing a graphics-capable 360 title requires the **proprietary Microsoft
-> Xbox 360 XDK** (compiler, headers, and the D3D9/XInput import libraries).
-> RXDK-360 is the open-source Visual Studio integration that drives that XDK.
-> There is **no fully open-source toolchain** that both emits a title XEX and
-> exposes D3D9 today (OpenXeChain emits XEX but has no graphics layer; libXenon
-> has graphics but only emits ELF). See "Toolchain reality" below.
+The goal is a genuine Xbox 360 title that launches on RGH/JTAG hardware. The
+open-source world can now do **either** graphics (libXenon, but ELF) **or** a
+real `.xex` (FreeChainXenon, but no graphics yet) — not both at once. So this
+repo ships both so you can pick.
+
+---
+
+## Quick start (no compiler needed)
+
+1. Open this repo's **Actions** tab and wait for a green run of
+   **`build-libxenon (playable ELF)`** (Path A).
+2. Download the **`AuroraBricks-libxenon`** artifact and unzip it.
+3. Copy the `AuroraBricks` folder to your console (USB / HDD / FTP).
+4. In **Aurora**, open the **File Manager**, browse to
+   `AuroraBricks/AuroraBricks.elf`, and press **A**.
+
+That elf is the **playable** build. Path B (`build-fcx`) additionally produces
+a genuine `.xex`; see below for why it can't draw the game yet.
 
 ---
 
@@ -29,131 +39,161 @@ consoles — no XeLL, no `.elf`.
 | **A** | Launch ball / next level / restart after game over |
 | **Start** | Pause / resume |
 
-If no controller is connected the game plays itself (autopilot) so you can
+With no controller connected the game plays itself (autopilot) so you can
 confirm the build renders.
 
 ---
 
-## Requirements
+## Path A — libXenon (playable ELF)
 
-1. **Windows 10/11** with **Visual Studio 2022** (or "18"). RXDK-360 is
-   Windows-only; the XDK content pipeline is Windows-only.
-2. A **full install of the licensed Xbox 360 XDK** (not a minimum install).
-3. **[RXDK-360](https://github.com/Team-Resurgent/RXDK360)** installed. It adds
-   the `Xbox 360` MSBuild platform and wires the XDK toolchain/headers into
-   clang. Point its installer at your XDK setup.
+[libXenon](https://github.com/Free60Project/libxenon) is the mature open-source
+bare-metal 360 SDK: real USB input, a Xenos display, and a compiler
+(`xenon-gcc`). It emits a **PPC ELF** which Aurora's File Manager (ELF support
+since 0.4b) and XeLL can load directly.
 
-Nothing in this repo redistributes Microsoft XDK content — it uses yours.
+- Sources: `xenon/Makefile`, `xenon/source/{main,gfx,input}.cpp`.
+- Reuses the API-agnostic game logic in `src/` (`game.cpp`, `game.h`, `font.h`,
+  and the shared `gfx.h`/`input.h` interfaces).
+- Renders straight into the GPU **scan-out framebuffer**. libXenon's console
+  driver exposes that surface as CPU-writable and micro-tiled; `xenon/source/gfx.cpp`
+  reproduces the same tiling math (`console_pset32`) to blit a linear
+  `0xAARRGGBB` shadow framebuffer each frame, then flushes the data cache.
+- Input maps libXenon's `controller_data_s` onto the project's `PadState`.
 
----
+Build it yourself (Docker, as in CI):
 
-## Build
-
-1. Open `AuroraBricks.sln` in Visual Studio 2022.
-2. Select configuration **Release** (or **Release_LTCG**) and platform
-   **`Xbox 360`**.
-3. **Build → Build Solution**.
-
-The build emits `AuroraBricks.xex` under the configuration output folder
-(e.g. `Release\`). The XDK *deploy* step may report `X1001 Could not connect`
-when no devkit is attached — that is deploy, not build, and the `.xex` is still
-produced.
-
-### Dev-sign and name it `default.xex`
-
-RGH/JTAG and devkits run dev-signed XEXs. Sign and rename for Aurora:
-
-```text
-XexTool.exe -m d -o default.xex AuroraBricks.xex
+```sh
+docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
+  bash -lc 'make -C xenon'
+# -> xenon/aurora_bricks.elf32
 ```
 
-`XexTool.exe` ships with RXDK-360 (and from
-[Team-Resurgent/XexTool](https://github.com/Team-Resurgent/XexTool)).
+Launch: rename/copy to `AuroraBricks.elf` and run it from Aurora's File Manager.
 
 ---
 
-## Deploy to the console
+## Path B — FreeChainXenon (genuine `.xex` bring-up)
 
-1. Copy `default.xex` to a folder on the console, e.g.
-   `Hdd1:\Games\AuroraBricks\default.xex` (via FTP, `xbcp`, or a USB drive).
-2. In **Aurora**, add that folder or launch the file from the File Manager.
-   Aurora runs `default.xex` in title mode.
+[FreeChainXenon](https://github.com/FreeChainXenon) is the only free/libre
+toolchain that emits a **real `XEX2`** (via `SynthXEX`). It builds binutils,
+gcc, newlib and SynthXEX from source. It is very early: **no D3D9, no input, no
+graphics layer**, so the game cannot be rendered with it yet.
+
+The `build-fcx` workflow therefore builds a **bring-up** title:
+`fcx/bringup.c` boots under the 360 OS, resolves a kernel export by ordinal
+(`VdDisplayFatalError`), and calls it — the on-screen code is the proof that a
+genuine XEX built here will actually execute on the console. The ELF is embedded
+inside the PE as a `.elf` section, so the XEX is self-contained.
+
+- CI (`build-fcx`): clones the GitHub mirrors of the FreeChainXenon repos,
+  patches the toolchain's hard-coded `/opt/local` prefixes, builds the toolchain
+  (cached), then runs `fcx/build.sh`.
+- `fcx/crt0.s` is vendored from `FCX-Test-2` (MPL-2.0). `fcx/bringup.c` and
+  `fcx/build.sh` are this project's.
+
+> This artifact is **not** the game. It exists to prove the open `.xex` path.
 
 ---
 
-## How the rendering works
+## Path C — RXDK-360 + licensed XDK (Windows)
 
-This follows the only D3D9 2D path proven on retail hardware (from
+The original, fully graphic title path: D3D9 + XInput through the proprietary
+Microsoft XDK, driven by
+[RXDK-360](https://github.com/Team-Resurgent/RXDK360) in Visual Studio.
+
+1. Windows 10/11 + Visual Studio 2022, a full licensed 360 XDK, and RXDK-360
+   (which adds the `Xbox 360` MSBuild platform).
+2. Open `AuroraBricks.sln`, pick **Release** / **Xbox 360**, Build.
+3. Emits `AuroraBricks.xex`. Dev-sign and rename for Aurora:
+
+   ```text
+   XexTool.exe -m d -o default.xex AuroraBricks.xex
+   ```
+
+Nothing here redistributes XDK content — it uses yours.
+
+### How the D3D9 rendering works
+
+Follows the 2D D3D9 path proven on retail hardware (from
 [Stu1dd3m0n9/xbox-360-port-enablers](https://github.com/Stu1dd3m0n9/xbox-360-port-enablers),
-MIT). It encodes several Xbox 360 hardware constraints:
+MIT):
 
 - **No runtime shader compilation.** `D3DXCompileShader` hangs the console, so
-  the blit vertex/pixel shaders are precompiled into DWORD arrays
-  (`src/shaders/blit_vs.h`, `blit_ps.h`). To change them, recompile on the PC:
-  `fxc /nologo /T vs_3_0 /E main /Fh blit_vs.h /Vn g_blit_vs blit_vs.hlsl`
-  (and the `ps_3_0` equivalent).
-- **The backbuffer cannot be locked.** The game draws into its own CPU buffer
-  (`Gfx_Lock`) and uploads it. Never call `LockRect` on the backbuffer.
-- **Textures are tiled.** The CPU buffer is uploaded with `XGTileTextureLevel`
-  (not a linear `memcpy`) into an `X8R8G8B8` texture, then blitted with
-  point sampling and a half-texel inset.
-- **`main()` never returns.** Returning calls `HalReturnToFirmware(0)` and
-  powers the console off, so the loop is intentionally infinite.
-
-Rendering is a software framebuffer, which is completely adequate for a 2D
-brick-breaker and keeps the GPU path minimal and predictable.
+  blit shaders are precompiled into DWORD arrays (`src/shaders/blit_vs.h`,
+  `blit_ps.h`).
+- **The backbuffer cannot be locked.** Draw into a CPU buffer (`Gfx_Lock`) and
+  upload it.
+- **Textures are tiled.** Upload with `XGTileTextureLevel` into an `X8R8G8B8`
+  texture, then blit with point sampling.
+- **`main()` never returns** (returning powers the console off).
 
 ---
 
 ## Layout
 
 ```
-AuroraBricks.sln / .vcxproj   Visual Studio project (platform: Xbox 360)
+.github/workflows/
+  build-libxenon.yml   Path A: libXenon playable ELF (Docker, no XDK)
+  build-fcx.yml        Path B: FreeChainXenon genuine XEX bring-up
+ci/sanity.yml          repo-only integrity check (not a runnable workflow)
+xenon/
+  Makefile             libXenon build
+  source/
+    main.cpp           bare-metal entry + main loop
+    gfx.cpp            scan-out framebuffer renderer (tiled blit)
+    input.cpp          libXenon controller -> PadState
+fcx/
+  build.sh             FreeChainXenon build script
+  crt0.s               vendored FCX startup (MPL-2.0)
+  bringup.c            kernel-export bring-up program
 src/
-  main.cpp      entry point and main loop
-  gfx.h/.cpp    D3D9 device + tiled framebuffer upload/blit + primitives
-  input.h/.cpp  XInput polling (local ABI) with edge detection
-  game.h/.cpp   Breakout logic + HUD/overlay drawing
-  font.h        5x7 bitmap font (no external assets)
-  shaders/      blit_vs.hlsl / blit_ps.hlsl + precompiled blit_vs.h / blit_ps.h
+  main.cpp             Path C entry point and main loop (D3D9)
+  gfx.h/.cpp           D3D9 device + tiled framebuffer upload/blit + primitives
+  input.h/.cpp         XInput polling (local ABI) with edge detection
+  game.h/.cpp          Breakout logic + HUD/overlay drawing (shared by all paths)
+  font.h               5x7 bitmap font (no external assets)
+  shaders/             blit_vs.hlsl / blit_ps.hlsl + precompiled blit_vs.h / blit_ps.h
+AuroraBricks.sln / .vcxproj   Path C Visual Studio project (platform: Xbox 360)
 ```
+
+The shared interface is `gfx.h` + `input.h` + `game.h`. `game.cpp` only ever
+touches those, which is why the same game logic runs on libXenon, FreeChainXenon
+and D3D9 unchanged.
 
 ---
 
-## Toolchain reality (why the build is Windows-only)
+## Toolchain reality (why all three paths exist)
 
-Verified while building this project:
+- **FreeChainXenon** emits a genuine `XEX2` and is fully open, but its runtime
+  is minimal — no graphics or input APIs. Good for a real `.xex`, not a game.
+- **libXenon** has graphics + input and is open, but emits **ELF**, run from
+  Aurora's File Manager or XeLL (not the coverflow title path).
+- **RXDK-360 + XDK** gives a full graphics-capable title `.xex`, but the
+  compiler/headers/D3D9 libs are proprietary and non-redistributable, and it is
+  Windows/Visual Studio only.
 
-- **OpenXeChain** (`SynthXEX` + LLVM fork) is the only *fully open* 360
-  toolchain that emits XEX2, but its runtime library (`xecorelib`) is only
-  `xam`/`xboxkrnl`/`hv` stubs — **no D3D9, no graphics**. It is also early and
-  unverified on hardware.
-- **RXDK-360** is the practical path to a real, graphics-capable title XEX, but
-  it consumes the **licensed Microsoft XDK** for the compiler/headers/libs
-  (D3D9, XInput). It is Windows + Visual Studio only.
-- **libXenon** has graphics and is open, but emits **ELF** (run via XeLL /
-  Aurora's File Manager), not a title `default.xex`.
-
-Consequently this repo **cannot** be built in GitHub Actions / on Linux: the
-XDK is proprietary and not redistributable. `ci/sanity.yml` is a repo-only
-integrity check; move it to `.github/workflows/` to enable it as a real workflow.
+Paths A and B **can** be built in GitHub Actions / on Linux; Path C cannot.
 
 ---
 
 ## Status and caveats
 
-- The source is written against the documented XDK/D3D9 API and the
-  hardware-verified patterns above, but it has **not been compiled or run on a
-  console by the author** (no Windows/XDK available). Treat the first build as
-  a bring-up: check `DbgPrint` output over the debug channel.
-- `Gfx_Lock` locks a `D3DPOOL_DEFAULT` texture. This mirrors the verified
-  enabler code; if your XDK/driver rejects it, switch the pool to
-  `D3DPOOL_MANAGED` in `src/gfx.cpp`.
-- No audio. Add XAudio2 if you want it (the enabler has a proven push model).
+- Paths A and B are built by CI on every push (see the badge/actions). The
+  libXenon ELF is verified to be `elf32-powerpc`; the FCX output is verified to
+  be genuine `XEX2` with an embedded ELF.
+- None of the paths has been run on physical hardware by the author. Treat the
+  first launch as bring-up.
+- Path C source is written against the documented XDK/D3D9 API and
+  hardware-verified patterns but has not been compiled (no Windows/XDK here).
+- No audio.
 
 ## License / attribution
 
-Original game code: your project, use freely. The D3D9 blit technique and the
-precompiled blit shader bytecode are adapted from
-[Stu1dd3m0n9/xbox-360-port-enablers](https://github.com/Stu1dd3m0n9/xbox-360-port-enablers)
-(MIT). Xbox 360 XDK content is Microsoft's and is not included.
+- Original game code: your project, use freely.
+- D3D9 blit technique + precompiled blit shader bytecode adapted from
+  [Stu1dd3m0n9/xbox-360-port-enablers](https://github.com/Stu1dd3m0n9/xbox-360-port-enablers)
+  (MIT).
+- libXenon scan-out/tiling technique adapted from libXenon's `console.c`
+  (BSD-3-Clause, Georg Lukas).
+- `fcx/crt0.s` from FreeChainXenon `FCX-Test-2` (MPL-2.0).
+- Microsoft XDK content is Microsoft's and is not included.
