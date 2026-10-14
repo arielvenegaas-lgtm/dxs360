@@ -1,7 +1,7 @@
 name: build-fcx (genuine XEX bring-up)
 
 # Builds a genuine Xbox 360 .xex with FreeChainXenon (the free/libre 360 SDK):
-# binutils + gcc + newlib + SynthXEX, all from source. This is the ONLY open
+# binutils + first-stage gcc + SynthXEX, all from source. This is the ONLY open
 # toolchain that emits a real XEX2. It has no graphics/input API yet, so this
 # artifact is a bring-up: it boots under the 360 OS and paints a code to prove
 # execution. See README.md.
@@ -52,6 +52,12 @@ jobs:
           # Point the optional library prefixes at the system prefix instead of
           # the author's /opt/local.
           sed -i 's#/opt/local#/usr#g' build-fcx-toolchain
+          # fcx/build.sh links with -nostdlib, so newlib is not needed - only
+          # binutils, the first-stage GCC, SynthXEX and the support files are.
+          # newlib 4.5.0 also currently ICEs GCC 14.2 on this target
+          # (libm/math/e_fmod.c: "unrecognizable insn"), so drop the newlib and
+          # second-GCC-pass blocks, keeping the SynthXEX + support-file steps.
+          sed -i '/[Bb]uild newlib/,/[Bb]uild SynthXEX/{/[Bb]uild SynthXEX/!d}' build-fcx-toolchain
           chmod +x build-fcx-toolchain
           export PREFIX="$GITHUB_WORKSPACE/.fcx"
           ./build-fcx-toolchain toolchain
