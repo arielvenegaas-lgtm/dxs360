@@ -98,40 +98,45 @@ uint32_t *Gfx_Lock(GfxContext *g, int *pitch_bytes) {
     return g->shadow;
 }
 
+/* Per-column tiled offset: the parts of the micro-tile index that depend only
+ * on x. Computed once and reused every row/blit. */
+static uint32_t s_xoff[GFX_MAX_W];
+static int      s_xoff_ready = 0;
+
 /* Blit the linear shadow into the micro-tiled scan-out buffer. */
 static void Gfx_Blit(GfxContext *g) {
     uint32_t *dst = g->cfb;
     uint32_t  cw  = g->cw;
+    uint32_t  w   = g->w;
+    uint32_t  h   = g->h;
 
-    for (uint32_t y = 0; y < g->h; ++y) {
-        const uint32_t *row = g->shadow + (size_t)y * g->w;
-        uint32_t rowtile = (y >> 5) * 32u * cw;
-        uint32_t yb = (y & 1u) << 2;         /* bit2  */
-        uint32_t yc = ((y & 31u) >> 1) << 6; /* bits 6..  */
-        uint32_t yxor = (y & 8u) << 2;       /* bit 5 toggle */
+    if (!s_xoff_ready) {
+        for (uint32_t x = 0; x < GFX_MAX_W; ++x)
+            s_xoff[x] = ((x >> 5) << 10) + (x & 3u) + (((x & 31u) >> 2) << 3);
+        s_xoff_ready = 1;
+    }
 
-        for (uint32_t x = 0; x < g->w; ++x) {
+    for (uint32_t y = 0; y < h; ++y) {
+        const uint32_t *row = g->shadow + (size_t)y * w;
+        uint32_t rowbase = (y >> 5) * 32u * cw
+                         + ((y & 1u) << 2)          /* bit 2      */
+                         + (((y & 31u) >> 1) << 6); /* bits 6..   */
+        uint32_t yxor = (y & 8u) << 2;              /* bit 5 flip */
+
+        for (uint32_t x = 0; x < w; ++x) {
             uint32_t c = row[x];
-            uint32_t r = (c >> 16) & 0xFFu;
+            uint32_t r  = (c >> 16) & 0xFFu;
             uint32_t gg = (c >> 8) & 0xFFu;
-            uint32_t b = c & 0xFFu;
+            uint32_t b  = c & 0xFFu;
             /* Same channel packing as libxenon's console_pset32(). */
             uint32_t val = (b << 24) | (gg << 16) | (r << 8);
 
-            uint32_t idx = rowtile
-                         + ((x >> 5) << 10)
-                         + (x & 3u)
-                         + yb
-                         + (((x & 31u) >> 2) << 3)
-                         + yc;
-            idx ^= yxor;
-
-            dst[idx] = val;
+            dst[(rowbase + s_xoff[x]) ^ yxor] = val;
         }
     }
 
     /* Push our writes out of the data cache to memory for the display engine. */
-    memdcbst((void *)dst, (int)((size_t)g->cw * g->ch * 4u));
+    memdcbst((void *)dst, (int)((size_t)cw * g->ch * 4u));
 }
 
 void Gfx_Present(GfxContext *g) {

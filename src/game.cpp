@@ -354,6 +354,18 @@ void Game_Draw(Game *g, GfxContext *gfx) {
         n = AppendInt(buf, n, sizeof(buf), g->level);
         Gfx_DrawText(gfx, (int)(g->width * 0.72f), (int)(g->field_y0 * 0.25f),
                      g->text_scale, COL_ACCENT, buf);
+
+        /* FPS counter, top-right corner (value supplied by the platform). */
+        if (g->fps > 0.0f) {
+            int ts = g->text_scale < 1 ? 1 : g->text_scale;
+            n = 0;
+            n = AppendStr(buf, n, sizeof(buf), "FPS ");
+            n = AppendInt(buf, n, sizeof(buf), (int)(g->fps + 0.5f));
+            int wtext = (int)strlen(buf) * (6 * ts);
+            int margin = (int)(g->width * 0.02f);
+            Gfx_DrawText(gfx, (int)g->width - margin - wtext,
+                         (int)(g->field_y0 * 0.25f), ts, COL_ACCENT, buf);
+        }
     }
 
     /* overlays */

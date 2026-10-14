@@ -34,6 +34,8 @@ int main(int argc, char **argv) {
     Game_Init(&game, Gfx_Width(gfx), Gfx_Height(gfx));
 
     float prev = NowSeconds();
+    float fps_window = prev;
+    int   fps_frames = 0;
 
     for (;;) {
         Input_Poll();
@@ -44,6 +46,15 @@ int main(int argc, char **argv) {
         prev = now;
 
         Game_Update(&game, pad, dt);
+
+        /* Recompute the displayed FPS about twice a second. */
+        ++fps_frames;
+        float elapsed = now - fps_window;
+        if (elapsed >= 0.5f) {
+            game.fps = (float)fps_frames / elapsed;
+            fps_frames = 0;
+            fps_window = now;
+        }
 
         int pitch = 0;
         uint32_t *fb = Gfx_Lock(gfx, &pitch);

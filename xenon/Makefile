@@ -25,7 +25,7 @@ INCLUDES := ../src
 
 # Recursive (=) on purpose: $(INCLUDE) is only defined in the sub-make, where
 # it is inherited from the exported environment of the top-level make.
-CFLAGS   = -g -O2 -Wall $(MACHDEP) $(INCLUDE)
+CFLAGS   = -g -O3 -funroll-loops -Wall $(MACHDEP) $(INCLUDE)
 CXXFLAGS = $(CFLAGS)
 
 LDFLAGS  = -g $(MACHDEP) -Wl,--gc-sections -Wl,-Map,$(notdir $@).map

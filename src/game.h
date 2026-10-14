@@ -40,6 +40,9 @@ typedef struct {
     int       lives;
     int       level;
 
+    /* last measured frames/sec, filled in by the platform layer (0 = hide) */
+    float     fps;
+
     /* tuning, scaled to resolution */
     float     paddle_speed;
     float     ball_speed;
