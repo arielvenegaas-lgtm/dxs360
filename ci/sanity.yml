@@ -1,0 +1,52 @@
+# Sanity checks only.
+#
+# This project CANNOT be compiled in CI: building a graphics-capable Xbox 360
+# title XEX requires the proprietary Microsoft Xbox 360 XDK (compiler, headers,
+# and D3D9/XInput import libraries) together with the Windows-only RXDK-360
+# Visual Studio integration. The XDK is not redistributable and is not present
+# on GitHub-hosted runners.
+#
+# So CI verifies the repository is well-formed (expected files exist, project
+# XML parses, sources are present) rather than attempting a build.
+name: sanity
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  repo-sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check expected files exist
+        run: |
+          set -e
+          test -f AuroraBricks.sln
+          test -f AuroraBricks.vcxproj
+          test -f src/main.cpp
+          test -f src/gfx.cpp
+          test -f src/gfx.h
+          test -f src/input.cpp
+          test -f src/input.h
+          test -f src/game.cpp
+          test -f src/game.h
+          test -f src/font.h
+          test -f src/shaders/blit_vs.h
+          test -f src/shaders/blit_ps.h
+          test -f src/shaders/blit_vs.hlsl
+          test -f src/shaders/blit_ps.hlsl
+          echo "all expected files present"
+      - name: Validate project XML
+        run: |
+          set -e
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          for f in ("AuroraBricks.vcxproj",):
+              ET.parse(f)
+              print("parsed", f)
+          PY
+      - name: Confirm the XDK build step is intentionally absent
+        run: |
+          echo "No XDK build in CI - see README.md 'Toolchain reality'."
