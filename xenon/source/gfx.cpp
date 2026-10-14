@@ -98,40 +98,43 @@ uint32_t *Gfx_Lock(GfxContext *g, int *pitch_bytes) {
     return g->shadow;
 }
 
-/* Per-column tiled offset: the parts of the micro-tile index that depend only
- * on x. Computed once and reused every row/blit. */
-static uint32_t s_xoff[GFX_MAX_W];
-static int      s_xoff_ready = 0;
-
-/* Blit the linear shadow into the micro-tiled scan-out buffer. */
+/* Blit the linear shadow into the micro-tiled scan-out buffer.
+ *
+ * The scan-out buffer is a permutation of linear memory (a full-screen fill is
+ * order-independent), so we iterate one 32x32 tile at a time: the destination
+ * writes then stay inside a single 4 KB tile instead of striding across ~40
+ * tiles per row. That is far friendlier to the store buffer / L2. */
 static void Gfx_Blit(GfxContext *g) {
     uint32_t *dst = g->cfb;
     uint32_t  cw  = g->cw;
     uint32_t  w   = g->w;
     uint32_t  h   = g->h;
 
-    if (!s_xoff_ready) {
-        for (uint32_t x = 0; x < GFX_MAX_W; ++x)
-            s_xoff[x] = ((x >> 5) << 10) + (x & 3u) + (((x & 31u) >> 2) << 3);
-        s_xoff_ready = 1;
-    }
+    for (uint32_t ty = 0; ty < h; ty += 32) {
+        uint32_t tylen = (h - ty < 32u) ? (h - ty) : 32u;
+        for (uint32_t tx = 0; tx < w; tx += 32) {
+            uint32_t txlen = (w - tx < 32u) ? (w - tx) : 32u;
 
-    for (uint32_t y = 0; y < h; ++y) {
-        const uint32_t *row = g->shadow + (size_t)y * w;
-        uint32_t rowbase = (y >> 5) * 32u * cw
-                         + ((y & 1u) << 2)          /* bit 2      */
-                         + (((y & 31u) >> 1) << 6); /* bits 6..   */
-        uint32_t yxor = (y & 8u) << 2;              /* bit 5 flip */
+            uint32_t *dtile = dst + (size_t)(ty >> 5) * 32u * cw
+                                  + ((size_t)(tx >> 5) << 10);
 
-        for (uint32_t x = 0; x < w; ++x) {
-            uint32_t c = row[x];
-            uint32_t r  = (c >> 16) & 0xFFu;
-            uint32_t gg = (c >> 8) & 0xFFu;
-            uint32_t b  = c & 0xFFu;
-            /* Same channel packing as libxenon's console_pset32(). */
-            uint32_t val = (b << 24) | (gg << 16) | (r << 8);
+            for (uint32_t ly = 0; ly < tylen; ++ly) {
+                const uint32_t *row = g->shadow + (size_t)(ty + ly) * w + tx;
+                uint32_t ypart = ((ly & 1u) << 2) + ((ly >> 1) << 6);
+                uint32_t yxor  = (ly & 8u) << 2;
 
-            dst[(rowbase + s_xoff[x]) ^ yxor] = val;
+                for (uint32_t lx = 0; lx < txlen; ++lx) {
+                    uint32_t c  = row[lx];
+                    uint32_t r  = (c >> 16) & 0xFFu;
+                    uint32_t gg = (c >> 8) & 0xFFu;
+                    uint32_t b  = c & 0xFFu;
+                    /* Same channel packing as libxenon's console_pset32(). */
+                    uint32_t val = (b << 24) | (gg << 16) | (r << 8);
+
+                    uint32_t off = (lx & 3u) + (((lx >> 2) << 3)) + ypart;
+                    dtile[off ^ yxor] = val;
+                }
+            }
         }
     }
 
