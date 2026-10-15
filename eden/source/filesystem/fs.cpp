@@ -21,6 +21,8 @@ int USBStorage_Init(void);
 int USBStorage_Get_Capacity(int device, unsigned int *sector_size);
 int USBStorage_Read_Sectors(int device, unsigned int sector,
                             unsigned int numSectors, void *buffer);
+
+int xenon_ata_init(void);
 }
 
 #include "fs.h"
@@ -31,6 +33,10 @@ static int  g_dev_count = 0;
 static uint64_t g_vol_size = 0;
 static int  g_ready = 0;
 static char g_roms[FS_PATH_MAX];
+static char g_scan_roots[FS_MAX_ROOTS][FS_PATH_MAX];
+static int  g_scan_root_count = 0;
+static char g_devtype[16];
+static char g_diag[128];
 static char g_status[96];
 static int  g_keys = -1;
 static char g_keys_status[64];
@@ -53,6 +59,12 @@ static void SetStatus(const char *s) {
     int i = 0;
     for (; s[i] && i < (int)sizeof(g_status) - 1; ++i) g_status[i] = s[i];
     g_status[i] = 0;
+}
+
+static void SetDiag(const char *s) {
+    int i = 0;
+    for (; s[i] && i < (int)sizeof(g_diag) - 1; ++i) g_diag[i] = s[i];
+    g_diag[i] = 0;
 }
 
 static double Now(void) {
@@ -123,7 +135,9 @@ static int CountKeyEntries(const unsigned char *b, long n) {
  * Informational only: this build does not use keys. */
 static void ProbeKeys(void) {
     static const char *cands[] = {
-        "keys/prod.keys", "eden/keys/prod.keys", "Eden/keys/prod.keys", "prod.keys"
+        "keys/prod.keys", "KEYS/PROD.KEYS", "keys/PROD.KEYS",
+        "eden/keys/prod.keys", "Eden/keys/prod.keys", "EDEN/KEYS/PROD.KEYS",
+        "prod.keys", "PROD.KEYS"
     };
     g_keys = -1;
     for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]); ++i) {
@@ -180,8 +194,10 @@ int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
     if (!found) {
         if (g_dev_count > 0) {
             SetStatus("USB device found, not 512-byte sectors");
+            SetDiag("USB device found but sector size != 512");
         } else {
             SetStatus("no USB mass-storage device");
+            SetDiag("no USB mass-storage device detected");
         }
         return 0;
     }
@@ -189,21 +205,34 @@ int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
     if (tick) tick(ctx, "mounting FAT32 volume");
     if (!Fat32_Mount(ReadSectors, 0)) {
         SetStatus("not a FAT32 volume");
+        SetDiag("FAT32 mount failed");
         return 0;
     }
     g_ready = 1;
+    snprintf(g_devtype, sizeof(g_devtype), "USB");
+    SetDiag("mounted via USB");
 
     static const char *cands[] = {
-        "roms", "eden/roms", "Eden/roms", "EDEN/ROMS", "ROMs", "ROMS", "roms/switch"
+        "roms", "ROMs", "ROMS", "roms/switch", "games", "GAMES", "Games",
+        "switch", "SWITCH", "eden/roms", "Eden/roms", "EDEN/ROMS", "roms/switch"
     };
     g_roms[0] = 0;
-    for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]); ++i) {
-        if (DirExists(cands[i])) {
-            int n = 0;
-            for (; cands[i][n] && n < FS_PATH_MAX - 1; ++n) g_roms[n] = cands[i][n];
-            g_roms[n] = 0;
-            break;
+    g_scan_root_count = 0;
+    /* add common roots even if not all exist - but prefer existing ones; also add root */
+    for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]) && g_scan_root_count < FS_MAX_ROOTS; ++i) {
+        int n = 0;
+        const char *c = cands[i];
+        for (; c[n] && n < FS_PATH_MAX - 1; ++n) g_scan_roots[g_scan_root_count][n] = c[n];
+        g_scan_roots[g_scan_root_count][n] = 0;
+        ++g_scan_root_count;
+        if (DirExists(c) && !g_roms[0]) {
+            memcpy(g_roms, g_scan_roots[g_scan_root_count - 1], FS_PATH_MAX);
         }
+    }
+    /* always include root as a scan root */
+    if (g_scan_root_count < FS_MAX_ROOTS) {
+        g_scan_roots[g_scan_root_count][0] = 0;
+        ++g_scan_root_count;
     }
 
     char buf[96];
@@ -217,4 +246,20 @@ int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
     SetStatus(buf);
     ProbeKeys();
     return 1;
+}
+int Fs_GetScanRoots(const char **roots, int max_roots) {
+    int n = 0;
+    for (int i = 0; i < g_scan_root_count && i < max_roots; ++i) {
+        roots[i] = g_scan_roots[i];
+        ++n;
+    }
+    return n;
+}
+
+const char *Fs_DeviceType(void) {
+    return g_devtype[0] ? g_devtype : "";
+}
+
+const char *Fs_LastDiag(void) {
+    return g_diag[0] ? g_diag : "";
 }

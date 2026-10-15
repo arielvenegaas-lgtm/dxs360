@@ -50,6 +50,10 @@ typedef struct {
     char status[96];
     char msg[128];
     float msg_t;
+    char last_dir[FS_PATH_MAX];
+    char last_file[128];
+    int last_count;
+    int last_files_seen;
     float time;        /* seconds since start, for animations */
 } EdenApp;
 

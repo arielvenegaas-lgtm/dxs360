@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #define FS_PATH_MAX 128
+#define FS_MAX_ROOTS 16
 
 /* Directory callback: return non-zero to keep going, 0 to stop. */
 typedef int (*FsDirFn)(void *ctx, const char *name, uint32_t size, int is_dir);
@@ -51,3 +52,12 @@ int Fs_KeyCount(void);
 
 /* Human-readable keys status, e.g. "prod.keys: 173 keys" or "prod.keys: none". */
 const char *Fs_KeysStatus(void);
+
+/* Gets the list of configured scan roots (volume-relative). Returns count. */
+int Fs_GetScanRoots(const char **roots, int max_roots);
+
+/* Returns the device type/name mounted (e.g. "USB" or "HDD") or "" if none. */
+const char *Fs_DeviceType(void);
+
+/* Returns last error/diagnostic message for the last operation ("" if none). */
+const char *Fs_LastDiag(void);
