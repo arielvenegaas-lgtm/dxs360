@@ -17,10 +17,14 @@ WHAT WORKS
     .nsp / .xci / .nro / .nso files (storage mounted on demand, not at boot).
   - Reads each file's header to show its REAL info: title ID, region,
     container type (NSP/PFS0, XCI, NRO, NSO) and content count.
+  - Decodes NSO/NRO module headers for real: text/rodata/data/bss sizes,
+    build ID and module version (bounds-checked, nothing is executed).
   - Parses scene filenames ("Game [TITLEID][vX][REGION].ext").
   - Detects a prod.keys file under keys/ and reports how many entries it has.
   - Shows a game grid with titles, file sizes, region and a DETECTED badge.
-  - Home / Library / Game Info / Settings / About / Menu screens.
+  - Home / Library / Game Info / System Status / Settings / About / Menu screens.
+  - System Status: an honest capability + feasibility report (what is and is
+    not implemented, and why full Switch emulation is not feasible here).
   - Rescan, grid-columns, show-extensions and scan-on-start options.
 
 FOLDER LAYOUT

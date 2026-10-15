@@ -26,13 +26,24 @@ eden/
 │   ├── input/            controller -> menu events (auto-repeat)
 │   ├── filesystem/       USB + FAT32 access and directory scanning
 │   ├── game/             game records + metadata
-│   └── core/             reserved for a future emulation core (stubs)
+│   └── core/             honest capability model + real NSO/NRO header probe
+├── tests/                host unit tests (loader), run in CI
 └── dist/                 package template (roms/, keys/, assets/, README)
 ```
 
 It **reuses** the verified libXenon renderer (`../xenon/source/gfx.cpp`),
 controller input (`../xenon/source/input.cpp`) and the read-only FAT32 reader
 (`../xenon/source/fat32.c`, extended with directory listing).
+
+## Core status
+
+There is still **no emulation**. `core/core.cpp` exposes a truthful capability
+model (CPU/GPU/Memory/Firmware/Loader/Audio) and a feasibility table comparing a
+Switch title's needs against the console's 3 PowerPC cores and 512 MB RAM; the
+**System Status** screen shows both. `core/loader.cpp` does real, non-executing
+work: it decodes the header of an **NSO** or **NRO** module (segment sizes,
+build id) with strict bounds checks, so Game Info can show a module's actual
+layout without ever mapping or running code.
 
 ## Boot and storage
 

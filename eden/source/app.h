@@ -10,7 +10,7 @@
 
 #define EDEN_APPNAME  "Eden"
 #define EDEN_EDITION  "Xbox 360 Frontend"
-#define EDEN_VERSION  "0.2.1"
+#define EDEN_VERSION  "0.3.0"
 
 typedef enum {
     SCR_HOME,
@@ -18,6 +18,7 @@ typedef enum {
     SCR_DETAIL,
     SCR_SETTINGS,
     SCR_ABOUT,
+    SCR_SYSTEM,
     SCR_MENU      /* Start overlay */
 } Screen;
 

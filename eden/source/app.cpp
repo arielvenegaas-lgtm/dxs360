@@ -7,10 +7,10 @@
 #include "fs.h"
 #include "core.h"
 
-static const char *kHome[] = { "Library", "Settings", "About", "Rescan Games" };
+static const char *kHome[] = { "Library", "System Status", "Settings", "About", "Rescan Games" };
 #define HOME_N ((int)(sizeof(kHome) / sizeof(kHome[0])))
 
-static const char *kMenu[] = { "Library", "Settings", "About", "Rescan Games", "Close" };
+static const char *kMenu[] = { "Library", "System Status", "Settings", "About", "Rescan Games", "Close" };
 #define MENU_N ((int)(sizeof(kMenu) / sizeof(kMenu[0])))
 
 static const char *kSet[] = {
@@ -123,10 +123,11 @@ static void ToggleInt(int *v) { *v = *v ? 0 : 1; }
 static void ActivateMenuItem(EdenApp *a, int idx) {
     switch (idx) {
     case 0: a->screen = SCR_LIBRARY; break;
-    case 1: a->set_sel = 0; a->screen = SCR_SETTINGS; break;
-    case 2: a->screen = SCR_ABOUT; break;
-    case 3: App_Rescan(a); App_ShowMessage(a, a->status); break;
-    case 4: a->screen = a->back_to; break; /* Close */
+    case 1: a->screen = SCR_SYSTEM; break;
+    case 2: a->set_sel = 0; a->screen = SCR_SETTINGS; break;
+    case 3: a->screen = SCR_ABOUT; break;
+    case 4: App_Rescan(a); App_ShowMessage(a, a->status); break;
+    case 5: a->screen = a->back_to; break; /* Close */
     default: break;
     }
 }
@@ -211,6 +212,10 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         break;
 
     case SCR_ABOUT:
+        if (nav.back || nav.accept) a->screen = SCR_HOME;
+        break;
+
+    case SCR_SYSTEM:
         if (nav.back || nav.accept) a->screen = SCR_HOME;
         break;
 

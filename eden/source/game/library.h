@@ -13,6 +13,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "loader.h" /* core/loader.h: real, read-only module header probe */
+
 #define GAME_MAX 512
 
 #define GAME_TITLEID_LEN 20
@@ -43,6 +45,8 @@ typedef struct {
     int      content_count;              /* entries found in container  */
     int      meta_scanned;               /* header has been read        */
     int      title_id_from_header;       /* title id came from the file */
+
+    ModuleInfo mod;      /* real NSO/NRO module layout (valid==0 if none) */
 
     uint16_t hue;        /* deterministic placeholder colour seed      */
 

@@ -37,7 +37,7 @@ export VPATH    := $(CURDIR)/source:$(CURDIR)/source/ui:$(CURDIR)/source/input:$
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 
 # eden modules + the reused libXenon layers (gfx, input) and shared FAT32.
-export OFILES   := main.o app.o ui.o nav.o library.o fs.o core.o gfx.o input.o fat32.o
+export OFILES   := main.o app.o ui.o nav.o library.o fs.o core.o loader.o gfx.o input.o fat32.o
 
 export INCLUDE  := -I$(CURDIR)/source -I$(CURDIR)/source/ui -I$(CURDIR)/source/input -I$(CURDIR)/source/game -I$(CURDIR)/source/filesystem -I$(CURDIR)/source/core -I$(CURDIR)/../src -I$(CURDIR)/../xenon/source -I$(CURDIR)/$(BUILD) -I$(LIBXENON_INC)
 export LIBPATHS := -L$(LIBXENON_LIB)

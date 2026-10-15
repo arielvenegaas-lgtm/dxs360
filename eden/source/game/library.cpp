@@ -1,6 +1,7 @@
 /* library.cpp: see library.h. Filename + container-header metadata parsing. */
 #include <string.h>
 
+#include "loader.h"
 #include "library.h"
 
 /* ---- small string helpers -------------------------------------------- */
@@ -197,11 +198,13 @@ int Library_ScanContainer(const void *data, uint32_t len, Game *g) {
     }
     if (len >= 4 && b[0] == 'N' && b[1] == 'R' && b[2] == 'O' && b[3] == '0') {
         g->container = CONT_NRO;
+        Loader_ProbeModule(b, len, &g->mod);
         g->meta_scanned = 1;
         return CONT_NRO;
     }
     if (len >= 4 && b[0] == 'N' && b[1] == 'S' && b[2] == 'O' && b[3] == '0') {
         g->container = CONT_NSO;
+        Loader_ProbeModule(b, len, &g->mod);
         g->meta_scanned = 1;
         return CONT_NSO;
     }
