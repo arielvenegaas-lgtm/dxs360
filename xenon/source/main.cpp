@@ -8,6 +8,7 @@
  */
 #include <ppc/timebase.h>
 #include <xenon_soc/xenon_power.h>
+#include <xenon_smc/xenon_smc.h>
 
 #include "gfx.h"
 #include "input.h"
@@ -22,6 +23,8 @@ int main(int argc, char **argv) {
 
     GfxContext *gfx = Gfx_Create();
     if (!Gfx_Ready(gfx)) {
+        /* No scan-out surface: nothing we can draw and no way to report it.
+         * Spin rather than returning, which would take the whole console down. */
         for (;;) { }
     }
 
@@ -36,6 +39,7 @@ int main(int argc, char **argv) {
     float prev = NowSeconds();
     float fps_window = prev;
     int   fps_frames = 0;
+    float reboot_hold = 0.0f;   /* seconds Back+Start has been held */
 
     for (;;) {
         Input_Poll();
@@ -44,6 +48,20 @@ int main(int argc, char **argv) {
         float now = NowSeconds();
         float dt = now - prev;
         prev = now;
+        /* Clamp dt so a long stall (e.g. a USB probe) cannot teleport the ball
+         * through the paddle when the loop resumes. */
+        if (dt < 0.0f) dt = 0.0f;
+        if (dt > 0.1f) dt = 0.1f;
+
+        /* Hold Back+Start for one second to soft-reboot. Handy when launched
+         * from Aurora's file manager, which gives no other way back out. */
+        if (pad->connected &&
+            (pad->buttons & (PAD_BACK | PAD_START)) == (PAD_BACK | PAD_START)) {
+            reboot_hold += dt;
+            if (reboot_hold >= 1.0f) xenon_smc_power_reboot();
+        } else {
+            reboot_hold = 0.0f;
+        }
 
         Game_Update(&game, pad, dt);
 

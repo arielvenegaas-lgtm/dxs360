@@ -50,7 +50,6 @@ static void UsbPollControllers(void) {
 #define TRIGGER_THRESH 30
 
 static PadState g_cur[PAD_COUNT];
-static PadState g_prev[PAD_COUNT];
 static int      g_seen[PAD_COUNT]; /* sticky "have we ever heard from port N" */
 
 static float NormalizeStick(int16_t v) {
@@ -65,7 +64,6 @@ static float NormalizeStick(int16_t v) {
 
 void Input_Init(void) {
     memset(g_cur, 0, sizeof(g_cur));
-    memset(g_prev, 0, sizeof(g_prev));
     memset(g_seen, 0, sizeof(g_seen));
 
     /* Bring up libXenon's USB stack. Without this the pad driver is never
@@ -114,14 +112,11 @@ void Input_Poll(void) {
         }
 
         /* Edge detection must compare against the PREVIOUS frame's state.
-         * g_cur[i] still holds last frame here; g_prev was one frame older,
-         * which made every press fire for two frames in a row (so a screen
-         * that acts on `accept` "confirmed" itself again and closed). */
+         * g_cur[i] still holds last frame here, so the diff is correct. */
         uint16_t prev_buttons = (uint16_t)g_cur[i].buttons;
         p.pressed  = (uint16_t)(p.buttons & ~prev_buttons);
         p.released = (uint16_t)(~p.buttons &  prev_buttons);
 
-        g_prev[i] = g_cur[i];
         g_cur[i]  = p;
     }
 }
