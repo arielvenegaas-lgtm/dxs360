@@ -1,33 +1,65 @@
-# Aurora Bricks
+# Eden — Nintendo Switch emulator for Xbox 360
 
-A 2D Breakout-style game for the **Xbox 360**. This repository can build it
-three ways — two of them entirely with **open-source toolchains** that need no
-Microsoft XDK and run in **GitHub Actions**:
+[![build-eden](https://github.com/arielvenegaas-lgtm/dxs360/actions/workflows/build-eden.yml/badge.svg)](https://github.com/arielvenegaas-lgtm/dxs360/actions/workflows/build-eden.yml)
 
-| Path | Toolchain | Output | Playable? | Launches from |
-|---|---|---|---|---|
-| **A** | [libXenon](https://github.com/Free60Project/libxenon) | `AuroraBricks.elf` | **Yes** (graphics + input) | Aurora File Manager / XeLL |
-| **B** | [FreeChainXenon](https://github.com/FreeChainXenon) | `default.xex` (genuine XEX2) | Bring-up only | Aurora File Manager |
-| **C** | RXDK-360 + licensed XDK | `default.xex` (genuine XEX2) | Yes | Aurora / FSD / XeXMenu |
+An open-source **Nintendo Switch emulator for the Xbox 360** (RGH/JTAG),
+built on [libXenon](https://github.com/Free60Project/libxenon) and inspired by
+the [Eden](https://git.eden-emu.dev/eden-emu/eden) emulator. It reads your own
+game files from a USB stick and presents them in a clean, controller-driven
+library, with the emulation core developed behind an honest stub.
 
-The goal is a genuine Xbox 360 title that launches on RGH/JTAG hardware. The
-open-source world can now do **either** graphics (libXenon, but ELF) **or** a
-real `.xex` (FreeChainXenon, but no graphics yet) — not both at once. So this
-repo ships both so you can pick.
+> **Project status — be aware:** the **game-library frontend is complete**, but
+> the **emulation core is not implemented yet**. In the current build Eden
+> browses and lists your games; it does **not** execute them, and no game can
+> boot. Nothing is faked or simulated — the loader reports honestly that
+> emulation is not available. Running Switch titles on a 2005 PowerPC console is
+> a very ambitious target; this repository is built in honest, verifiable steps.
 
 ---
 
-## Quick start (no compiler needed)
+## What works today
 
-1. Open this repo's **Actions** tab and wait for a green run of
-   **`build-libxenon (playable ELF)`** (Path A).
-2. Download the **`AuroraBricks-libxenon`** artifact and unzip it.
-3. Copy the `AuroraBricks` folder to your console (USB / HDD / FTP).
-4. In **Aurora**, open the **File Manager**, browse to
-   `AuroraBricks/AuroraBricks.elf`, and press **A**.
+- Boots on Xbox 360 via libXenon (`switch.elf`), draws to the Xenos display and
+  reads a wired controller.
+- Scans a FAT32 USB stick for Nintendo Switch game files
+  (`.nsp`, `.xci`, `.nro`, `.nso`).
+- Presents them in a game library with titles, extensions, file sizes and a
+  detected/supported indicator.
+- Home, Library, Game Info, Settings, About and in-game menu screens.
+- Rescan, grid-columns, show-extensions and scan-on-start options.
+- Runs its USB mass-storage probe **before** starting the pad driver, so a
+  controller is never dropped by the device scan.
 
-That elf is the **playable** build. Path B (`build-fcx`) additionally produces
-a genuine `.xex`; see below for why it can't draw the game yet.
+## What does **not** work yet
+
+- **Emulation.** No CPU, GPU, memory or firmware components. `Core_CanBoot()`
+  is always false and the loader tells you so.
+- Bootable game execution of any kind.
+
+---
+
+## Download and run
+
+1. Open the **Actions** tab and pick a green run of
+   **`build-eden (Switch frontend ELF + package)`**.
+2. Download the **`eden-frontend`** artifact (or **`eden-switch-elf`** for the
+   bare ELF) and unzip it. You get an `eden/` folder.
+3. Copy the **`eden`** folder to a FAT32 (MBR) USB stick.
+4. Optionally drop your own game files into `eden/roms/`.
+5. On the console, open **Aurora → File Manager**, browse to
+   `eden/switch.elf` and press **A** (or launch it from XeLL).
+
+The package layout is:
+
+```
+eden/
+  switch.elf     the executable
+  README.txt     usage notes shipped with the release
+  LICENSE.txt    GPL-3.0
+  roms/          your own game files go here
+  keys/          your own prod.keys (unused for now)
+  assets/        icons / backgrounds / fonts (placeholders)
+```
 
 ---
 
@@ -35,177 +67,82 @@ a genuine `.xex`; see below for why it can't draw the game yet.
 
 | Input | Action |
 |---|---|
-| Left stick / D-pad | Move paddle |
-| **A** | Launch ball / next level / restart after game over |
-| **Start** | Pause / resume |
+| D-pad / left stick | Navigate |
+| **A** | Select / open |
+| **B** | Back |
+| **Start** | Menu (Library / Settings / About / Rescan / Close) |
+| **LB / RB** | Previous / next page |
 
-With no controller connected the game plays itself (autopilot) so you can
-confirm the build renders.
+Use a **wired** controller (or the Xbox 360 wireless PC receiver). A
+play-and-charge cable only charges.
 
 ---
 
-## Path A — libXenon (playable ELF)
+## Build
 
-[libXenon](https://github.com/Free60Project/libxenon) is the mature open-source
-bare-metal 360 SDK: real USB input, a Xenos display, and a compiler
-(`xenon-gcc`). It emits a **PPC ELF** which Aurora's File Manager (ELF support
-since 0.4b) and XeLL can load directly.
-
-- Sources: `xenon/Makefile`, `xenon/source/{main,gfx,input}.cpp`.
-- Reuses the API-agnostic game logic in `src/` (`game.cpp`, `game.h`, `font.h`,
-  and the shared `gfx.h`/`input.h` interfaces).
-- Renders straight into the GPU **scan-out framebuffer**. libXenon's console
-  driver exposes that surface as CPU-writable and micro-tiled; `xenon/source/gfx.cpp`
-  reproduces the same tiling math (`console_pset32`) to blit a linear
-  `0xAARRGGBB` shadow framebuffer each frame, then flushes the data cache.
-- Input maps libXenon's `controller_data_s` onto the project's `PadState`.
-
-Build it yourself (Docker, as in CI):
+CI builds and packages Eden on every push with no Microsoft XDK required. To
+build locally with Docker:
 
 ```sh
 docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
-  bash -lc 'make -C xenon'
-# -> xenon/aurora_bricks.elf32
+  bash -lc 'make -C eden'
+# -> eden/switch.elf32   (packaged as eden/switch.elf)
 ```
 
-Launch: rename/copy to `AuroraBricks.elf` and run it from Aurora's File Manager.
+The build uses `-O2 -fno-tree-vectorize`: the Xenon's VMX128 core mis-executes
+the standard AltiVec that GCC emits at `-O3`.
 
-> **Controller:** input uses libXenon's USB stack (wired pads). A
-> *play-and-charge* cable only charges — use a **wired** controller, or the
-> Xbox 360 *wireless* PC receiver. With no pad detected the game runs in
-> autopilot (a self-playing demo), which can look like frozen input.
-
----
-
-## Path B — FreeChainXenon (genuine `.xex` bring-up)
-
-[FreeChainXenon](https://github.com/FreeChainXenon) is the only free/libre
-toolchain that emits a **real `XEX2`** (via `SynthXEX`). It builds binutils,
-gcc, newlib and SynthXEX from source. It is very early: **no D3D9, no input, no
-graphics layer**, so the game cannot be rendered with it yet.
-
-The `build-fcx` workflow therefore builds a **bring-up** title:
-`fcx/bringup.c` boots under the 360 OS, resolves a kernel export by ordinal
-(`VdDisplayFatalError`), and calls it — the on-screen code is the proof that a
-genuine XEX built here will actually execute on the console. The ELF is embedded
-inside the PE as a `.elf` section, so the XEX is self-contained.
-
-- CI (`build-fcx`): clones the GitHub mirrors of the FreeChainXenon repos,
-  patches the toolchain's hard-coded `/opt/local` prefixes, drops newlib and the
-  second GCC pass (unused, since `fcx/build.sh` links `-nostdlib`), pins
-  `SynthXEX` to `0.0.5` (0.0.2 has a stack-VLA overflow in its SHA-1 pass that
-  segfaults *after* writing the XEX), builds the toolchain (cached in Actions),
-  then runs `fcx/build.sh`.
-- `fcx/crt0.s` is vendored from `FCX-Test-2` (MPL-2.0). `fcx/bringup.c` and
-  `fcx/build.sh` are this project's.
-
-> This artifact is **not** the game. It exists to prove the open `.xex` path.
-
----
-
-## Path C — RXDK-360 + licensed XDK (Windows)
-
-The original, fully graphic title path: D3D9 + XInput through the proprietary
-Microsoft XDK, driven by
-[RXDK-360](https://github.com/Team-Resurgent/RXDK360) in Visual Studio.
-
-1. Windows 10/11 + Visual Studio 2022, a full licensed 360 XDK, and RXDK-360
-   (which adds the `Xbox 360` MSBuild platform).
-2. Open `AuroraBricks.sln`, pick **Release** / **Xbox 360**, Build.
-3. Emits `AuroraBricks.xex`. Dev-sign and rename for Aurora:
-
-   ```text
-   XexTool.exe -m d -o default.xex AuroraBricks.xex
-   ```
-
-Nothing here redistributes XDK content — it uses yours.
-
-### How the D3D9 rendering works
-
-Follows the 2D D3D9 path proven on retail hardware (from
-[Stu1dd3m0n9/xbox-360-port-enablers](https://github.com/Stu1dd3m0n9/xbox-360-port-enablers),
-MIT):
-
-- **No runtime shader compilation.** `D3DXCompileShader` hangs the console, so
-  blit shaders are precompiled into DWORD arrays (`src/shaders/blit_vs.h`,
-  `blit_ps.h`).
-- **The backbuffer cannot be locked.** Draw into a CPU buffer (`Gfx_Lock`) and
-  upload it.
-- **Textures are tiled.** Upload with `XGTileTextureLevel` into an `X8R8G8B8`
-  texture, then blit with point sampling.
-- **`main()` never returns** (returning powers the console off).
+The `build-eden` workflow verifies the output is a genuine 32-bit big-endian
+PowerPC ELF before packaging the release ZIP.
 
 ---
 
 ## Layout
 
 ```
-.github/workflows/
-  build-libxenon.yml   Path A: libXenon playable ELF (Docker, no XDK)
-  build-fcx.yml        Path B: FreeChainXenon genuine XEX bring-up
-ci/sanity.yml          repo-only integrity check (not a runnable workflow)
-xenon/
-  Makefile             libXenon build
+eden/
+  Makefile                 libXenon build (-> switch.elf32 -> switch.elf)
   source/
-    main.cpp           bare-metal entry + main loop
-    gfx.cpp            scan-out framebuffer renderer (tiled blit)
-    input.cpp          libXenon controller -> PadState
-fcx/
-  build.sh             FreeChainXenon build script
-  crt0.s               vendored FCX startup (MPL-2.0)
-  bringup.c            kernel-export bring-up program
-src/
-  main.cpp             Path C entry point and main loop (D3D9)
-  gfx.h/.cpp           D3D9 device + tiled framebuffer upload/blit + primitives
-  input.h/.cpp         XInput polling (local ABI) with edge detection
-  game.h/.cpp          Breakout logic + HUD/overlay drawing (shared by all paths)
-  font.h               5x7 bitmap font (no external assets)
-  shaders/             blit_vs.hlsl / blit_ps.hlsl + precompiled blit_vs.h / blit_ps.h
-AuroraBricks.sln / .vcxproj   Path C Visual Studio project (platform: Xbox 360)
+    main.cpp               bare-metal entry + main loop
+    app.{h,cpp}            screens, navigation, scanning
+    ui/                    theme, layout, all screen drawing
+      theme.h  layout.h  ui.h  ui.cpp
+    input/                 controller -> menu events (auto-repeat)
+      nav.h  nav.cpp
+    filesystem/            USB + FAT32 access and directory scanning
+      fs.h  fs.cpp
+    game/                  game records + roms/ scanning
+      library.h  library.cpp
+    core/                  reserved for the emulation core (honest stubs)
+      core.h  core.cpp
+  dist/                    package template (roms/, keys/, assets/, README)
+  LICENSE.txt              GPL-3.0
 ```
 
-The shared interface is `gfx.h` + `input.h` + `game.h`. `game.cpp` only ever
-touches those, which is why the same game logic runs on libXenon, FreeChainXenon
-and D3D9 unchanged.
+Eden reuses the verified libXenon renderer (`xenon/source/gfx.cpp`), controller
+input (`xenon/source/input.cpp`) and the read-only FAT32 reader
+(`xenon/source/fat32.c`), extended with directory enumeration.
 
 ---
 
-## Toolchain reality (why all three paths exist)
+## Roadmap
 
-- **FreeChainXenon** emits a genuine `XEX2` and is fully open, but its runtime
-  is minimal — no graphics or input APIs. Good for a real `.xex`, not a game.
-- **libXenon** has graphics + input and is open, but emits **ELF**, run from
-  Aurora's File Manager or XeLL (not the coverflow title path).
-- **RXDK-360 + XDK** gives a full graphics-capable title `.xex`, but the
-  compiler/headers/D3D9 libs are proprietary and non-redistributable, and it is
-  Windows/Visual Studio only.
-
-Paths A and B **can** be built in GitHub Actions / on Linux; Path C cannot.
+1. ✅ Frontend: game library, screens, controller navigation, USB/FAT32 scan.
+2. ✅ Release packaging + CI verification (genuine PPC ELF + ZIP).
+3. ⏳ Investigate emulation feasibility on the Xbox 360 (CPU translation,
+   memory budget, GPU) — this is the hard, open-ended part.
+4. ⏳ A bootable core behind `Core_*`, if and when it proves viable.
 
 ---
 
-## Status and caveats
+## Legal
 
-- Paths A and B are built by CI on every push (see the badge/actions). The
-  libXenon ELF is verified to be `elf32-powerpc`; the FCX output is verified to
-  be genuine `XEX2` with an embedded ELF.
-- The FreeChainXenon `.xex` is an **experimental bring-up**: it deliberately
-  calls `VdDisplayFatalError` (a fatal-error path), so on real hardware it can
-  show a black screen and turn the front LED **red**. It is *not* the game, and
-  it should not be launched repeatedly on a console you care about.
-- None of the paths has been run on physical hardware by the author. Treat the
-  first launch as bring-up.
-- Path C source is written against the documented XDK/D3D9 API and
-  hardware-verified patterns but has not been compiled (no Windows/XDK here).
-- No audio.
-
-## License / attribution
-
-- Original game code: your project, use freely.
-- D3D9 blit technique + precompiled blit shader bytecode adapted from
-  [Stu1dd3m0n9/xbox-360-port-enablers](https://github.com/Stu1dd3m0n9/xbox-360-port-enablers)
-  (MIT).
-- libXenon scan-out/tiling technique adapted from libXenon's `console.c`
-  (BSD-3-Clause, Georg Lukas).
-- `fcx/crt0.s` from FreeChainXenon `FCX-Test-2` (MPL-2.0).
-- Microsoft XDK content is Microsoft's and is not included.
+- Ships **no** games, **no** firmware, **no** `prod.keys` and **no** copyrighted
+  box art. You must supply your own, legally obtained files. Eden draws neutral
+  placeholders rather than inventing covers.
+- Licensed **GPL-3.0-or-later** (see `eden/LICENSE.txt`). Inspired by the
+  [Eden emulator project](https://git.eden-emu.dev/eden-emu/eden); **not
+  affiliated with or endorsed by** Eden, Nintendo, or Microsoft.
+- Reused open-source components (e.g. libXenon) retain their own licenses; see
+  the relevant files and folders.
+- Not affiliated with the Super Mario 64 PC port or any other project.
