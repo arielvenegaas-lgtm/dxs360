@@ -18,6 +18,9 @@ static float NowSeconds(void) {
 
 typedef struct { EdenApp *a; float t; } LoadCtx;
 
+/* The library table is large; keep the app state in BSS, not on the stack. */
+static EdenApp g_app;
+
 static int LoadTick(void *ctx, const char *status) {
     LoadCtx *lc = (LoadCtx *)ctx;
     lc->t += 0.02f;
@@ -34,25 +37,25 @@ int main(int argc, char **argv) {
 
     xenon_make_it_faster(XENON_SPEED_FULL);
 
-    EdenApp app;
-    App_Init(&app, gfx);
+    EdenApp *app = &g_app;
+    App_Init(app, gfx);
 
     LoadCtx lc;
-    lc.a = &app;
+    lc.a = app;
     lc.t = 0.0f;
-    UI_DrawLoading(&app, "Starting up...", 0.0f);
+    UI_DrawLoading(app, "Starting up...", 0.0f);
     Gfx_Present(gfx);
 
     int ok = Fs_Mount(LoadTick, &lc);
-    app.fs_ready = ok;
+    app->fs_ready = ok;
 
-    UI_DrawLoading(&app, ok ? "Storage ready" : "No USB storage found", lc.t + 0.4f);
+    UI_DrawLoading(app, ok ? "Storage ready" : "No USB storage found", lc.t + 0.4f);
     Gfx_Present(gfx);
 
     /* Pads only now, after the mass-storage port scan has finished. */
     Input_Init();
 
-    if (app.set.scan_on_start) App_Rescan(&app);
+    if (app->set.scan_on_start) App_Rescan(app);
 
     float prev = NowSeconds();
     for (;;) {
@@ -65,8 +68,8 @@ int main(int argc, char **argv) {
         if (dt < 0.0f) dt = 0.0f;
         if (dt > 0.1f) dt = 0.1f;
 
-        App_Update(&app, pad, dt);
-        UI_Draw(&app);
+        App_Update(app, pad, dt);
+        UI_Draw(app);
         Gfx_Present(gfx);
     }
 

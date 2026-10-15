@@ -56,6 +56,22 @@ static int ScanCb(void *ctx, const char *name, uint32_t size, int is_dir) {
     return 1;
 }
 
+/* Reads the first bytes of a game's container and fills its metadata (real
+ * title ID, container type, content count). Metadata only - nothing executes. */
+static unsigned char g_metabuf[65536];
+
+static void LoadGameMeta(EdenApp *a, Game *g) {
+    if (!g || g->meta_scanned) return;
+    g->meta_scanned = 1;
+    if (!a->fs_ready) return;
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s", Fs_RomsDir(), g->file);
+    long n = Fs_ReadFile(path, g_metabuf, (uint32_t)sizeof(g_metabuf));
+    if (n <= 0) return;
+    Library_ScanContainer(g_metabuf, (uint32_t)n, g);
+}
+
 void App_Rescan(EdenApp *a) {
     Library_Clear(&a->lib);
     a->lib_sel = 0;
@@ -151,7 +167,11 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         if (nav.lb) a->lib_sel = (a->lib_sel + n - per) % n;
         if (nav.rb) a->lib_sel = (a->lib_sel + per) % n;
         a->lib_page = a->lib_sel / per;
-        if (nav.accept) { a->detail_idx = a->lib_sel; a->screen = SCR_DETAIL; }
+        if (nav.accept) {
+            a->detail_idx = a->lib_sel;
+            if (a->lib.count > 0) LoadGameMeta(a, &a->lib.items[a->detail_idx]);
+            a->screen = SCR_DETAIL;
+        }
         if (nav.back)   a->screen = SCR_HOME;
         break;
     }
@@ -160,8 +180,8 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         int n = a->lib.count;
         if (nav.back) { a->screen = SCR_LIBRARY; break; }
         if (n > 0) {
-            if (nav.lb) { a->lib_sel = (a->lib_sel + n - 1) % n; a->detail_idx = a->lib_sel; }
-            if (nav.rb) { a->lib_sel = (a->lib_sel + 1) % n; a->detail_idx = a->lib_sel; }
+            if (nav.lb) { a->lib_sel = (a->lib_sel + n - 1) % n; a->detail_idx = a->lib_sel; LoadGameMeta(a, &a->lib.items[a->detail_idx]); }
+            if (nav.rb) { a->lib_sel = (a->lib_sel + 1) % n; a->detail_idx = a->lib_sel; LoadGameMeta(a, &a->lib.items[a->detail_idx]); }
             if (nav.accept) App_ShowMessage(a, Core_WhyNot(&a->lib.items[a->detail_idx]));
         }
         break;

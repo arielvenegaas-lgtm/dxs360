@@ -85,6 +85,44 @@ static void FmtSize(char *d, int sz, uint32_t b) {
     else                                  snprintf(d, sz, "%u B", (unsigned)b);
 }
 
+static uint32_t LerpCol(uint32_t c0, uint32_t c1, int t, int n) {
+    if (n < 1) n = 1;
+    int r0 = (c0 >> 16) & 0xFF, g0 = (c0 >> 8) & 0xFF, b0 = c0 & 0xFF;
+    int r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+    int r = r0 + (r1 - r0) * t / n;
+    int gg = g0 + (g1 - g0) * t / n;
+    int b = b0 + (b1 - b0) * t / n;
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)gg << 8) | (uint32_t)b;
+}
+
+/* Vertical gradient drawn as horizontal bands (Gfx_FillRect is opaque). */
+static void VGradient(GfxContext *g, int x, int y, int w, int h,
+                      uint32_t c0, uint32_t c1) {
+    int bands = 48;
+    if (h < bands) bands = h;
+    if (bands < 1) return;
+    for (int i = 0; i < bands; ++i) {
+        int yy = y + h * i / bands;
+        int yh = y + h * (i + 1) / bands - yy;
+        Fill(g, x, yy, w, yh, LerpCol(c0, c1, i, bands));
+    }
+}
+
+/* Draws text with a 1-pixel (scaled) black drop shadow for legibility. */
+static void TextS(GfxContext *g, int x, int y, int sc, uint32_t c, const char *s) {
+    Gfx_DrawText(g, x + sc, y + sc, sc, COL_BLACK, s);
+    Gfx_DrawText(g, x, y, sc, c, s);
+}
+
+static const char *TextOr(const char *s) { return (s && s[0]) ? s : "-"; }
+
+/* Label/value row with the value clipped to the remaining width. */
+static void Row(GfxContext *g, int x, int y, int u, int valx, int maxw,
+                const char *label, const char *val) {
+    Gfx_DrawText(g, x, y, 2 * u, COL_MUTED, label);
+    TextClip(g, valx, y, 2 * u, maxw, COL_TEXT, val);
+}
+
 static const char *GameTitle(const EdenApp *a, const Game *g) {
     return a->set.show_ext ? g->file : g->title;
 }
@@ -92,8 +130,19 @@ static const char *GameTitle(const EdenApp *a, const Game *g) {
 /* ---- chrome ----------------------------------------------------------- */
 
 static void Backdrop(GfxContext *g, const EdenApp *a) {
-    Fill(g, 0, 0, (int)a->W, (int)a->H, COL_BG);
-    Fill(g, 0, 0, (int)a->W, (int)a->H / 3, COL_BG_2);
+    int W = (int)a->W, H = (int)a->H;
+
+    /* Deep slate gradient: darker at the top, easing into the page colour. */
+    VGradient(g, 0, 0, W, H, 0xFF0C1721u, COL_BG);
+
+    /* Soft sky-blue glow band under the header. */
+    for (int i = 0; i < 6; ++i)
+        Fill(g, 0, i * 7, W, 7, LerpCol(0xFF223D52u, 0xFF0C1721u, i, 6));
+
+    /* Faint grid for a little depth. */
+    uint32_t grid = 0xFF17222Du;
+    for (int x = 0; x < W; x += 96) Fill(g, x, 0, 1, H, grid);
+    for (int y = 0; y < H; y += 96) Fill(g, 0, y, W, 1, grid);
 }
 
 static void Header(GfxContext *g, const EdenApp *a, const char *title) {
@@ -101,10 +150,10 @@ static void Header(GfxContext *g, const EdenApp *a, const char *title) {
     Fill(g, 0, 0, (int)a->W, UI_HEADER_H, COL_PANEL);
     Fill(g, 0, UI_HEADER_H - 2, (int)a->W, 2, COL_ACCENT);
 
-    Gfx_DrawText(g, UI_MARGIN, (UI_HEADER_H - 5 * 3 * u) / 2, 3 * u, COL_ACCENT, EDEN_APPNAME);
+    TextS(g, UI_MARGIN, (UI_HEADER_H - 5 * 3 * u) / 2, 3 * u, COL_ACCENT, EDEN_APPNAME);
 
     int lx = UI_MARGIN + TextW(EDEN_APPNAME, 3 * u) + 16 * u;
-    Gfx_DrawText(g, lx, (UI_HEADER_H - 2 * 2 * u) / 2, 2 * u, COL_TEXT_DIM, title);
+    TextS(g, lx, (UI_HEADER_H - 2 * 2 * u) / 2, 2 * u, COL_TEXT_DIM, title);
 
     const char *ver = EDEN_EDITION "  v" EDEN_VERSION;
     Gfx_DrawText(g, (int)a->W - UI_MARGIN - TextW(ver, 2 * u),
@@ -149,6 +198,14 @@ static void PlaceholderArt(GfxContext *g, const EdenApp *a, const Game *gm,
          TextW(ext, es) + 8 * es, 7 * es + 6 * es, 0xB0000000u);
     Gfx_DrawText(g, x + w - TextW(ext, es) - 6 * es, y + h - 7 * es - 6 * es,
                  es, COL_TEXT, ext);
+
+    /* Region badge, top-left, when the filename carried one. */
+    if (gm->region[0]) {
+        int rs = u;
+        Fill(g, x + 8 * rs, y + 8 * rs, TextW(gm->region, rs) + 8 * rs,
+             7 * rs + 6 * rs, 0xB0000000u);
+        Gfx_DrawText(g, x + 12 * rs, y + 8 * rs + 3 * rs, rs, COL_ACCENT, gm->region);
+    }
 }
 
 /* ---- screens ---------------------------------------------------------- */
@@ -157,7 +214,7 @@ static void DrawHome(GfxContext *g, EdenApp *a) {
     int u = U(a);
     int bodyY = UI_HEADER_H;
 
-    Gfx_DrawText(g, UI_MARGIN, bodyY + 60 * u, 7 * u, COL_TEXT, EDEN_APPNAME);
+    TextS(g, UI_MARGIN, bodyY + 60 * u, 7 * u, COL_TEXT, EDEN_APPNAME);
     Gfx_DrawText(g, UI_MARGIN, bodyY + 60 * u + 7 * 7 * u + 8 * u, 2 * u,
                  COL_ACCENT, EDEN_EDITION " - game library");
 
@@ -202,6 +259,8 @@ static void DrawHome(GfxContext *g, EdenApp *a) {
     snprintf(line, sizeof(line), "Folder:  %s", Fs_RomsDir()[0] ? Fs_RomsDir() : "(none)");
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
     snprintf(line, sizeof(line), "Storage: %s", Fs_Status());
+    Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
+    snprintf(line, sizeof(line), "Keys:    %s", Fs_KeysStatus());
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
     snprintf(line, sizeof(line), "Files seen: %d   Supported: %d",
              a->lib.files_seen, Library_SupportedCount(&a->lib));
@@ -301,30 +360,47 @@ static void DrawDetail(GfxContext *g, EdenApp *a) {
 
     int tx = UI_MARGIN + artW + 40 * u;
     int ty = bodyY;
-    TextClip(g, tx, ty, 4 * u, (int)a->W - tx - UI_MARGIN, COL_TEXT, gm->title);
-    ty += 4 * 7 * u + 16 * u;
+    TextS(g, tx, ty, 4 * u, COL_TEXT, gm->title);
+    ty += 4 * 7 * u + 6 * u;
+    Gfx_DrawText(g, tx, ty, 2 * u, COL_TEXT_DIM, gm->file);
+    ty += 2 * 7 * u + 20 * u;
 
-    char line[160];
-    Gfx_DrawText(g, tx, ty, 2 * u, COL_TEXT_DIM, gm->file); ty += 2 * 7 * u + 5 * u;
-    snprintf(line, sizeof(line), "Type: %s", gm->ext[0] ? gm->ext + 1 : "?");
-    Gfx_DrawText(g, tx, ty, 2 * u, COL_TEXT_DIM, line); ty += 2 * 7 * u + 5 * u;
-    char sz[24]; FmtSize(sz, sizeof(sz), gm->size);
-    snprintf(line, sizeof(line), "Size: %s", sz);
-    Gfx_DrawText(g, tx, ty, 2 * u, COL_TEXT_DIM, line); ty += 2 * 7 * u + 5 * u;
-    snprintf(line, sizeof(line), "Folder: %s", Fs_RomsDir()[0] ? Fs_RomsDir() : "(none)");
-    Gfx_DrawText(g, tx, ty, 2 * u, COL_TEXT_DIM, line); ty += 2 * 7 * u + 18 * u;
+    char sz[24];
+    FmtSize(sz, sizeof(sz), gm->size);
+    char cnt[32];
+    if (gm->content_count > 0)
+        snprintf(cnt, sizeof(cnt), "%d file%s", gm->content_count,
+                 gm->content_count == 1 ? "" : "s");
+    else
+        snprintf(cnt, sizeof(cnt), "-");
 
-    Gfx_DrawText(g, tx, ty, 2 * u, COL_WARN, "Status: DETECTED (not bootable)"); ty += 2 * 7 * u + 16 * u;
+    const char *ext = (gm->ext[0] == '.') ? gm->ext + 1 : (gm->ext[0] ? gm->ext : "?");
+
+    int valx = tx + 168 * u;
+    int maxw = (int)a->W - valx - UI_MARGIN;
+    int rh = 2 * 7 * u + 6 * u;
+    Row(g, tx, ty, u, valx, maxw, "Title ID",  TextOr(gm->title_id)); ty += rh;
+    Row(g, tx, ty, u, valx, maxw, "Version",   TextOr(gm->version));  ty += rh;
+    Row(g, tx, ty, u, valx, maxw, "Region",    TextOr(gm->region));   ty += rh;
+    Row(g, tx, ty, u, valx, maxw, "Container", Library_ContainerName(gm->container)); ty += rh;
+    Row(g, tx, ty, u, valx, maxw, "Contents",  cnt);                  ty += rh;
+    Row(g, tx, ty, u, valx, maxw, "Size",      sz);                   ty += rh;
+    Row(g, tx, ty, u, valx, maxw, "Type",      ext);                  ty += rh + 12 * u;
+
+    Gfx_DrawText(g, tx, ty, 2 * u, COL_WARN, "Status: DETECTED (not bootable)");
+    ty += 2 * 7 * u + 16 * u;
 
     int bw = (int)a->W - tx - UI_MARGIN;
     int bh = 2 * 7 * u * 3 + 40 * u;
-    Fill(g, tx, ty, bw, bh, COL_PANEL);
-    Frame(g, tx, ty, bw, bh, 1, COL_LINE);
-    Gfx_DrawText(g, tx + 16 * u, ty + 14 * u, 2 * u, COL_ACCENT, "What does this mean?");
-    Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * 7 * u + 8 * u, 2 * u, COL_TEXT_DIM,
-                 "Eden360 detected this file on your USB stick.");
-    Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * (2 * 7 * u) + 12 * u, 2 * u, COL_TEXT_DIM,
-                 "Booting games is not implemented in this build.");
+    if (ty + bh < (int)a->H - UI_FOOTER_H - UI_MARGIN) {
+        Fill(g, tx, ty, bw, bh, COL_PANEL);
+        Frame(g, tx, ty, bw, bh, 1, COL_LINE);
+        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u, 2 * u, COL_ACCENT, "What does this mean?");
+        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * 7 * u + 8 * u, 2 * u, COL_TEXT_DIM,
+                     "Eden360 read this file's header to show its real title ID");
+        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * (2 * 7 * u) + 12 * u, 2 * u, COL_TEXT_DIM,
+                     "and contents. Booting games is not implemented in this build.");
+    }
 }
 
 static void DrawSettings(GfxContext *g, EdenApp *a) {
@@ -381,9 +457,9 @@ static void DrawAbout(GfxContext *g, EdenApp *a) {
         "Inspired by the Eden emulator project; not affiliated with, nor",
         "endorsed by, Eden, Nintendo, or Microsoft.",
         "",
-        "This build is a FRONTEND ONLY. It discovers and presents game",
-        "files on a FAT32 USB stick. It does NOT emulate the Nintendo",
-        "Switch and cannot boot any game.",
+        "It reads each file's header to show its real title ID, region and",
+        "contents. This build is a FRONTEND ONLY: it does NOT emulate the",
+        "Nintendo Switch and cannot boot any game.",
         "",
         "Built on libXenon / free60. No proprietary Xbox 360 SDK is used.",
     };
@@ -391,6 +467,11 @@ static void DrawAbout(GfxContext *g, EdenApp *a) {
         Gfx_DrawText(g, x, y, 2 * u, COL_TEXT_DIM, lines[i]);
         y += 2 * 7 * u + 7 * u;
     }
+
+    y += 8 * u;
+    Gfx_DrawText(g, x, y, 2 * u, COL_ACCENT, Fs_KeysStatus());
+    y += 2 * 7 * u + 7 * u;
+    Gfx_DrawText(g, x, y, 2 * u, COL_MUTED, "keys are not used by this frontend build");
 }
 
 static void DrawMenuOverlay(GfxContext *g, EdenApp *a) {

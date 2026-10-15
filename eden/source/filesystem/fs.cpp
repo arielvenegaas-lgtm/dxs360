@@ -1,5 +1,6 @@
 /* fs.cpp: see fs.h. */
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <ppc/timebase.h>
@@ -28,6 +29,9 @@ static int  g_dev  = -1;
 static int  g_ready = 0;
 static char g_roms[FS_PATH_MAX];
 static char g_status[64];
+static int  g_keys = -1;
+static char g_keys_status[64];
+static unsigned char g_keybuf[65536];
 
 static int ReadSectors(void *ctx, uint32_t lba, uint32_t count, void *buf) {
     (void)ctx;
@@ -55,6 +59,10 @@ static double Now(void) {
 int Fs_Ready(void) { return g_ready; }
 const char *Fs_RomsDir(void) { return g_roms; }
 const char *Fs_Status(void) { return g_status[0] ? g_status : "not mounted"; }
+int Fs_KeyCount(void) { return g_keys; }
+const char *Fs_KeysStatus(void) {
+    return g_keys_status[0] ? g_keys_status : "prod.keys: not checked";
+}
 
 long Fs_ListDir(const char *path, FsDirFn fn, void *ctx) {
     if (!g_ready) return -1;
@@ -64,6 +72,60 @@ long Fs_ListDir(const char *path, FsDirFn fn, void *ctx) {
 long Fs_ReadFile(const char *path, void *buf, uint32_t max) {
     if (!g_ready) return -1;
     return Fat32_ReadFile(path, buf, max);
+}
+
+/* Sets the keys status string. */
+static void SetKeysStatus(const char *s) {
+    int i = 0;
+    for (; s[i] && i < (int)sizeof(g_keys_status) - 1; ++i) g_keys_status[i] = s[i];
+    g_keys_status[i] = 0;
+}
+
+/* Counts "name = value" lines (ignoring blanks, comments and lines with an
+ * empty key). */
+static int CountKeyEntries(const unsigned char *b, long n) {
+    int count = 0;
+    long i = 0;
+    while (i < n) {
+        long ls = i;
+        while (i < n && b[i] != '\n') ++i;
+        long le = i;
+        if (i < n) ++i; /* consume newline */
+
+        long a = ls, z = le;
+        while (a < z && (b[a] == ' ' || b[a] == '\t' || b[a] == '\r')) ++a;
+        while (z > a && (b[z - 1] == ' ' || b[z - 1] == '\t' || b[z - 1] == '\r')) --z;
+        if (a >= z) continue;
+        if (b[a] == '#' || b[a] == ';') continue;
+
+        long k = a;
+        while (k < z && b[k] != '=' && b[k] != ' ' && b[k] != '\t') ++k;
+        int keyLen = (int)(k - a);
+        int hasEq = 0;
+        for (long j = a; j < z; ++j) if (b[j] == '=') { hasEq = 1; break; }
+        if (hasEq && keyLen > 0) ++count;
+    }
+    return count;
+}
+
+/* Looks for a prod.keys file under keys/ and reports how many entries it has.
+ * Informational only: this build does not use keys. */
+static void ProbeKeys(void) {
+    static const char *cands[] = {
+        "keys/prod.keys", "eden/keys/prod.keys", "Eden/keys/prod.keys", "prod.keys"
+    };
+    g_keys = -1;
+    for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]); ++i) {
+        long n = Fs_ReadFile(cands[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
+        if (n > 0) {
+            g_keys = CountKeyEntries(g_keybuf, n);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "prod.keys: %d keys", g_keys);
+            SetKeysStatus(buf);
+            return;
+        }
+    }
+    SetKeysStatus("prod.keys: not found");
 }
 
 /* Returns 1 if `path` is an existing directory. */
@@ -125,5 +187,6 @@ int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
     }
 
     SetStatus(g_roms[0] ? "USB FAT32 ready" : "USB ok, no roms/ folder");
+    ProbeKeys();
     return 1;
 }

@@ -15,14 +15,19 @@ WHAT WORKS
   - Boots on Xbox 360 (libXenon), draws a menu, reads the controller.
   - Scans the "roms" folder of a FAT32 USB stick for
     .nsp / .xci / .nro / .nso files.
-  - Shows a game grid with titles, file sizes and a DETECTED badge.
+  - Reads each file's header to show its REAL info: title ID, region,
+    container type (NSP/PFS0, XCI, NRO, NSO) and content count.
+  - Parses scene filenames ("Game [TITLEID][vX][REGION].ext").
+  - Detects a prod.keys file under keys/ and reports how many entries it has.
+  - Shows a game grid with titles, file sizes, region and a DETECTED badge.
   - Home / Library / Game Info / Settings / About / Menu screens.
   - Rescan, grid-columns, show-extensions and scan-on-start options.
 
 FOLDER LAYOUT
   switch.elf   the executable (launch from Aurora File Manager or XeLL)
   roms/        put your OWN, legally obtained game files here
-  keys/        put your OWN, legally obtained prod.keys here (unused for now)
+  keys/        put your OWN, legally obtained prod.keys here (detected and
+               counted for information; not used by this frontend build)
   assets/      icons / backgrounds / fonts (placeholders)
 
 USING IT

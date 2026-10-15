@@ -31,3 +31,11 @@ const char *Fs_RomsDir(void);
 
 /* Short human-readable storage status, e.g. "USB FAT32 ready" or "no USB". */
 const char *Fs_Status(void);
+
+/* Counts "name = value" entries in a prod.keys file found under keys/ (0 if
+ * the file exists but holds no usable entries, -1 if none was found). Purely
+ * informational: this frontend build does not use keys. */
+int Fs_KeyCount(void);
+
+/* Human-readable keys status, e.g. "prod.keys: 173 keys" or "prod.keys: none". */
+const char *Fs_KeysStatus(void);
