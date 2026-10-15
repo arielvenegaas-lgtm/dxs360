@@ -18,6 +18,12 @@ typedef int (*FsDirFn)(void *ctx, const char *name, uint32_t size, int is_dir);
  * animate; return 0 from `tick` to abort the wait. Returns 1 on success. */
 int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx);
 
+/* Mounts on first call if not already mounted (no tick callback). Returns the
+ * ready flag. Kept separate from Fs_Mount so storage is only touched when the
+ * user actually asks for it: libXenon's USB mass-storage probe can hang on some
+ * consoles when the ELF is launched from Aurora, so it must not run at boot. */
+int Fs_EnsureMounted(void);
+
 int Fs_Ready(void);
 
 /* Lists a directory. Returns entries listed, or -1 if it does not exist. */

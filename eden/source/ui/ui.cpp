@@ -286,6 +286,8 @@ static void DrawEmpty(GfxContext *g, EdenApp *a, int bodyY, int bodyH) {
     y += 2 * 7 * u + 24 * u;
     TextC(g, cx, y, 2 * u, COL_TEXT_DIM, "Then press Start > Rescan Games to refresh.");
     y += 2 * 7 * u + 16 * u;
+    TextC(g, cx, y, 2 * u, COL_ACCENT, "Press A now to scan USB storage.");
+    y += 2 * 7 * u + 16 * u;
     TextC(g, cx, y, 2 * u, COL_MUTED, Fs_Status());
 }
 

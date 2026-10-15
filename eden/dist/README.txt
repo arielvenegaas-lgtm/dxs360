@@ -14,7 +14,7 @@ There is a Super Mario 64 PC port for N64 (NOT this project). This is not that.
 WHAT WORKS
   - Boots on Xbox 360 (libXenon), draws a menu, reads the controller.
   - Scans the "roms" folder of a FAT32 USB stick for
-    .nsp / .xci / .nro / .nso files.
+    .nsp / .xci / .nro / .nso files (storage mounted on demand, not at boot).
   - Reads each file's header to show its REAL info: title ID, region,
     container type (NSP/PFS0, XCI, NRO, NSO) and content count.
   - Parses scene filenames ("Game [TITLEID][vX][REGION].ext").
@@ -34,7 +34,14 @@ USING IT
   1. Copy this whole "eden" folder onto a USB stick formatted FAT32 (MBR).
   2. Put your game files in roms/.
   3. On the console, launch switch.elf from Aurora's File Manager (or XeLL).
-  4. The frontend finds roms/ automatically (also checks eden/roms).
+  4. Open "Library" and press A to scan; the frontend finds roms/
+     automatically (it also checks eden/roms).
+
+  NOTE ON STORAGE: Eden does not touch USB storage at boot (so the app always
+  opens). Storage is mounted the first time you scan. libXenon's USB
+  mass-storage probe can hang on some consoles when the ELF is launched from
+  Aurora; if the app freezes when you press A to scan, launch switch.elf from
+  XeLL instead (or remove the DVD drive).
 
 CONTROLS
   D-pad / left stick : navigate

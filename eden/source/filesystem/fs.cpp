@@ -56,6 +56,12 @@ static double Now(void) {
     return (double)mftb() / (double)PPC_TIMEBASE_FREQ;
 }
 
+int Fs_EnsureMounted(void) {
+    if (g_ready) return 1;
+    Fs_Mount(0, 0);
+    return g_ready;
+}
+
 int Fs_Ready(void) { return g_ready; }
 const char *Fs_RomsDir(void) { return g_roms; }
 const char *Fs_Status(void) { return g_status[0] ? g_status : "not mounted"; }

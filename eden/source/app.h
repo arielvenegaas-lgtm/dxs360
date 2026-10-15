@@ -10,7 +10,7 @@
 
 #define EDEN_APPNAME  "Eden"
 #define EDEN_EDITION  "Xbox 360 Frontend"
-#define EDEN_VERSION  "0.2.0"
+#define EDEN_VERSION  "0.2.1"
 
 typedef enum {
     SCR_HOME,

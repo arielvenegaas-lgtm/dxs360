@@ -76,11 +76,15 @@ void App_Rescan(EdenApp *a) {
     Library_Clear(&a->lib);
     a->lib_sel = 0;
     a->lib_page = 0;
-    a->fs_ready = Fs_Ready();
+
+    /* Storage is mounted lazily here (never at boot): libXenon's USB
+     * mass-storage probe can hang on some consoles when the ELF is launched
+     * from Aurora, so we only touch it when the user asks for a scan. */
+    if (!a->fs_ready) a->fs_ready = Fs_EnsureMounted();
 
     if (!a->fs_ready) {
         SetStr(a->status, (int)sizeof(a->status),
-               "No USB storage found - copy the roms folder to a FAT32 stick");
+               "No USB storage mounted - connect a FAT32 stick with a roms/ folder");
         return;
     }
     const char *roms = Fs_RomsDir();
@@ -154,7 +158,8 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         int n = a->lib.count;
         if (n <= 0) {
             if (nav.back) a->screen = SCR_HOME;
-            if (nav.accept) App_ShowMessage(a, "No games found. Add files to roms/ and rescan.");
+            /* Storage is touched only here, on an explicit press. */
+            if (nav.accept) { App_Rescan(a); App_ShowMessage(a, a->status); }
             break;
         }
         if (nav.left)  a->lib_sel = (a->lib_sel + n - 1) % n;

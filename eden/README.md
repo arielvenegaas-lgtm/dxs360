@@ -34,6 +34,15 @@ It **reuses** the verified libXenon renderer (`../xenon/source/gfx.cpp`),
 controller input (`../xenon/source/input.cpp`) and the read-only FAT32 reader
 (`../xenon/source/fat32.c`, extended with directory listing).
 
+## Boot and storage
+
+Eden boots exactly like the game build: `Gfx_Create -> xenon_make_it_faster ->
+Input_Init -> UI loop`. It deliberately does **not** touch USB mass storage at
+boot, because libXenon's USB mass-storage probe can hang the console when the
+ELF is launched from Aurora. Storage is mounted lazily the first time you scan
+(open **Library** and press **A**, or use **Rescan Games**). If scanning hangs
+on your console, launch `switch.elf` from XeLL instead of Aurora.
+
 ## Build
 ```
 docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest bash -lc "make -C eden"
