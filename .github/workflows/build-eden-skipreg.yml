@@ -1,4 +1,4 @@
-name: build-eden-skipreg (diagnostic: skip boot .eh_frame registration)
+name: build-eden-skipreg diagnostic (skip boot eh_frame registration)
 
 # DIAGNOSTIC BUILD ONLY - not a release.
 #
