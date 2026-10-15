@@ -26,6 +26,27 @@ jobs:
               eden/tests/test_loader.cpp eden/source/core/loader.cpp -o /tmp/test_loader
           /tmp/test_loader
 
+      - name: Host unit tests (image decoder: PNG/BMP)
+        run: |
+          set -e
+          # Fixtures are generated with the Python standard library only
+          # (zlib/struct): no PIL or other third-party dependency in CI.
+          python3 eden/tests/make_img_fixtures.py /tmp/imgfix
+          gcc -std=c99 -Wall -c src/img.c -I src -o /tmp/img.o
+          g++ -std=c++11 -Wall -I src \
+              eden/tests/test_img.cpp /tmp/img.o -o /tmp/test_img
+          /tmp/test_img /tmp/imgfix
+
+      - name: Host unit tests (local cover-art lookup)
+        run: |
+          set -e
+          python3 eden/tests/make_img_fixtures.py /tmp/imgfix
+          gcc -std=c99 -Wall -c src/img.c -I src -o /tmp/img.o
+          g++ -std=c++11 -Wall -I src -I eden/source/game \
+              eden/tests/test_artwork.cpp eden/source/game/artwork.cpp \
+              /tmp/img.o -o /tmp/test_art
+          /tmp/test_art /tmp/imgfix
+
       - name: Host unit tests (controller edge detection)
         run: |
           set -e

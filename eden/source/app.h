@@ -8,6 +8,7 @@
 #include "nav.h"
 #include "library.h"
 #include "fs.h"
+#include "img.h"
 
 #define EDEN_APPNAME  "Eden"
 #define EDEN_EDITION  "Xbox 360 Frontend"
@@ -66,3 +67,11 @@ void App_ShowMessage(EdenApp *a, const char *text);
 /* Library grid geometry (shared with the UI). */
 int App_LibRows(const EdenApp *a);
 int App_LibPerPage(const EdenApp *a);
+
+/* Local cover art for game `idx`, loaded and cached on first call. Returns
+ * NULL when the game ships no readable PNG/BMP cover (the caller then draws its
+ * placeholder). Never fetches anything: purely local files next to the game. */
+const Image *App_GameArt(EdenApp *a, int idx);
+
+/* Frees every cached cover (called on rescan / shutdown). */
+void App_ArtFlush(EdenApp *a);

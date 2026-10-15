@@ -6,6 +6,7 @@
 #include "ui/layout.h"
 #include "fs.h"
 #include "core.h"
+#include "artwork.h"
 
 static const char *kHome[] = { "Library", "System Status", "Settings", "About", "Rescan Games" };
 #define HOME_N ((int)(sizeof(kHome) / sizeof(kHome[0])))
@@ -47,6 +48,64 @@ int App_LibPerPage(const EdenApp *a) {
 void App_ShowMessage(EdenApp *a, const char *text) {
     SetStr(a->msg, (int)sizeof(a->msg), text ? text : "");
     a->msg_t = 3.5f;
+}
+
+/* ---- local cover art (+ small bounded cache) -------------------------- *
+ *
+ * Covers are ordinary PNG/BMP files sitting next to the game (see
+ * game/artwork.h). Decoding is done once per game and cached; the cache is
+ * bounded so a large library can never exhaust the console's RAM. Nothing is
+ * fetched over the network and no cover is invented.
+ */
+#define ART_CACHE_MAX 16
+#define ART_MAX_W     220
+#define ART_MAX_H     330
+
+static Image g_art[ART_CACHE_MAX];
+static int   g_art_idx[ART_CACHE_MAX];
+static int   g_art_n;
+
+static long ArtFsRead(void *user, const char *path, void *buf, uint32_t max) {
+    (void)user;
+    return Fs_ReadFile(path, buf, max);
+}
+
+void App_ArtFlush(EdenApp *a) {
+    (void)a;
+    for (int i = 0; i < g_art_n; ++i) Img_Free(&g_art[i]);
+    g_art_n = 0;
+}
+
+const Image *App_GameArt(EdenApp *a, int idx) {
+    if (!a || idx < 0 || idx >= a->lib.count) return NULL;
+    if (!a->fs_ready) return NULL;
+    for (int i = 0; i < g_art_n; ++i)
+        if (g_art_idx[i] == idx) return &g_art[i];
+
+    Game *gm = &a->lib.items[idx];
+    if (gm->art_tried) return NULL; /* already looked: no cover next to it */
+    gm->art_tried = 1;
+
+    Image img;
+    if (!Artwork_LoadForGame(ArtFsRead, NULL, gm->dir, gm->file,
+                             ART_MAX_W, ART_MAX_H, &img, NULL, 0))
+        return NULL;
+
+    if (g_art_n >= ART_CACHE_MAX) { /* evict oldest */
+        int ev = g_art_idx[0];
+        Img_Free(&g_art[0]);
+        /* The evicted game can be retried if it scrolls back into view. */
+        if (ev >= 0 && ev < a->lib.count) a->lib.items[ev].art_tried = 0;
+        for (int i = 1; i < ART_CACHE_MAX; ++i) {
+            g_art[i - 1] = g_art[i];
+            g_art_idx[i - 1] = g_art_idx[i];
+        }
+        g_art_n = ART_CACHE_MAX - 1;
+    }
+    g_art[g_art_n] = img;
+    g_art_idx[g_art_n] = idx;
+    ++g_art_n;
+    return &g_art[g_art_n - 1];
 }
 
 /* ---- recursive library scan ------------------------------------------ *
@@ -135,6 +194,7 @@ static void LoadGameMeta(EdenApp *a, Game *g) {
 }
 
 void App_Rescan(EdenApp *a) {
+    App_ArtFlush(a);
     Library_Clear(&a->lib);
     a->lib_sel = 0;
     a->lib_page = 0;

@@ -201,24 +201,12 @@ static void Footer(GfxContext *g, const EdenApp *a) {
                  y + (UI_FOOTER_H - 2 * u) / 2, u, COL_MUTED, right);
 }
 
-/* ---- placeholder box art --------------------------------------------- */
+/* ---- box art ---------------------------------------------------------- */
 
-static void PlaceholderArt(GfxContext *g, const EdenApp *a, const Game *gm,
-                           int x, int y, int w, int h) {
+/* Format + region badges drawn over the art (placeholder or real cover). */
+static void ArtBadges(GfxContext *g, const EdenApp *a, const Game *gm,
+                      int x, int y, int w, int h) {
     int u = U(a);
-    uint32_t base = Hsv(gm->hue, 0.42f, 0.42f);
-    uint32_t top  = Hsv(gm->hue, 0.55f, 0.62f);
-    uint32_t bot  = Hsv(gm->hue, 0.60f, 0.22f);
-
-    Fill(g, x, y, w, h, base);
-    Fill(g, x, y, w, h / 2, top);
-    Fill(g, x, y + h / 2, w, h - h / 2, bot);
-
-    char initial[2] = { gm->title[0] ? gm->title[0] : '?', 0 };
-    int sc = h / 3 / 7;
-    if (sc < 1) sc = 1;
-    TextC(g, x + w / 2, y + h / 2 - 7 * sc / 2, sc, COL_WHITE, initial);
-
     const char *ext = (gm->ext[0] == '.') ? gm->ext + 1 : gm->ext;
     int es = u;
     Fill(g, x + w - TextW(ext, es) - 10 * es, y + h - 7 * es - 8 * es,
@@ -233,6 +221,34 @@ static void PlaceholderArt(GfxContext *g, const EdenApp *a, const Game *gm,
              7 * rs + 6 * rs, 0xB0000000u);
         Gfx_DrawText(g, x + 12 * rs, y + 8 * rs + 3 * rs, rs, COL_ACCENT, gm->region);
     }
+}
+
+static void PlaceholderArt(GfxContext *g, const Game *gm,
+                           int x, int y, int w, int h) {
+    uint32_t base = Hsv(gm->hue, 0.42f, 0.42f);
+    uint32_t top  = Hsv(gm->hue, 0.55f, 0.62f);
+    uint32_t bot  = Hsv(gm->hue, 0.60f, 0.22f);
+
+    Fill(g, x, y, w, h, base);
+    Fill(g, x, y, w, h / 2, top);
+    Fill(g, x, y + h / 2, w, h - h / 2, bot);
+
+    char initial[2] = { gm->title[0] ? gm->title[0] : '?', 0 };
+    int sc = h / 3 / 7;
+    if (sc < 1) sc = 1;
+    TextC(g, x + w / 2, y + h / 2 - 7 * sc / 2, sc, COL_WHITE, initial);
+}
+
+/* Draws a game's cover: the local cover image when one was found next to the
+ * file, otherwise the deterministic coloured placeholder. */
+static void GameArt(GfxContext *g, EdenApp *a, const Game *gm, int idx,
+                    int x, int y, int w, int h) {
+    const Image *im = App_GameArt(a, idx);
+    if (im && im->pixels)
+        Gfx_DrawImage(g, x, y, w, h, im->pixels, (int)im->w, (int)im->h);
+    else
+        PlaceholderArt(g, gm, x, y, w, h);
+    ArtBadges(g, a, gm, x, y, w, h);
 }
 
 /* ---- screens ---------------------------------------------------------- */
@@ -367,7 +383,7 @@ static void DrawLibrary(GfxContext *g, EdenApp *a) {
         if (sel) Frame(g, x - 3, y - 3, tileW + 6, artH + 6, 3, COL_ACCENT);
         else     Frame(g, x - 1, y - 1, tileW + 2, artH + 2, 1, COL_LINE);
 
-        PlaceholderArt(g, a, gm, x, y, tileW, artH);
+        GameArt(g, a, gm, idx, x, y, tileW, artH);
 
         TextClip(g, x, y + artH + 8 * u, 2 * u, tileW, sel ? COL_TEXT : COL_TEXT_DIM,
                  GameTitle(a, gm));
@@ -404,7 +420,7 @@ static void DrawDetail(GfxContext *g, EdenApp *a) {
     if (artH > (int)a->H - UI_FOOTER_H - bodyY - UI_MARGIN)
         artH = (int)a->H - UI_FOOTER_H - bodyY - UI_MARGIN;
     Frame(g, UI_MARGIN - 2, bodyY - 2, artW + 4, artH + 4, 2, COL_LINE);
-    PlaceholderArt(g, a, gm, UI_MARGIN, bodyY, artW, artH);
+    GameArt(g, a, gm, a->detail_idx, UI_MARGIN, bodyY, artW, artH);
 
     int tx = UI_MARGIN + artW + 40 * u;
     int ty = bodyY;
@@ -440,6 +456,8 @@ static void DrawDetail(GfxContext *g, EdenApp *a) {
     Row(g, tx, ty, u, valx, maxw, "Contents",  cnt);                  ty += rh;
     Row(g, tx, ty, u, valx, maxw, "Size",      sz);                   ty += rh;
     Row(g, tx, ty, u, valx, maxw, "Type",      ext);                  ty += rh;
+    Row(g, tx, ty, u, valx, maxw, "Device",
+        Fs_DeviceType()[0] ? Fs_DeviceType() : "-");                  ty += rh;
 
     /* Real module layout, decoded by core/loader (NSO/NRO only). */
     if (gm->mod.valid) {

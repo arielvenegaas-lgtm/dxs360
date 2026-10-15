@@ -13,8 +13,9 @@ There is a Super Mario 64 PC port for N64 (NOT this project). This is not that.
 
 WHAT WORKS
   - Boots on Xbox 360 (libXenon), draws a menu, reads the controller.
-  - Scans the "roms" folder of a FAT32 USB stick for
-    .nsp / .xci / .nro / .nso files (storage mounted on demand, not at boot).
+  - Scans a FAT32 USB stick for .nsp / .xci / .nro / .nso files. The whole
+    volume is walked (any folder), not just "roms" (storage is mounted on
+    demand, not at boot).
   - Reads each file's header to show its REAL info: title ID, region,
     container type (NSP/PFS0, XCI, NRO, NSO) and content count.
   - Decodes NSO/NRO module headers for real: text/rodata/data/bss sizes,
@@ -22,10 +23,24 @@ WHAT WORKS
   - Parses scene filenames ("Game [TITLEID][vX][REGION].ext").
   - Detects a prod.keys file under keys/ and reports how many entries it has.
   - Shows a game grid with titles, file sizes, region and a DETECTED badge.
+  - Shows your OWN box art: if a cover image sits next to a game it is decoded
+    (built-in PNG/BMP decoder) and shown. No art is downloaded or invented -
+    a game without a cover keeps its neutral placeholder.
   - Home / Library / Game Info / System Status / Settings / About / Menu screens.
   - System Status: an honest capability + feasibility report (what is and is
     not implemented, and why full Switch emulation is not feasible here).
   - Rescan, grid-columns, show-extensions and scan-on-start options.
+
+BOX ART (optional, your own images)
+  Put a PNG or BMP next to a game and Eden will use it. It looks, in order, in
+  the game's folder for:
+    cover.png / cover.jpg / cover.jpeg / folder.png
+    <GameName>.png / .jpg / .jpeg          (filename without the extension)
+    <GameName>/cover.png / .jpg            (a folder named after the game)
+    <FileName.ext>.png / .jpg              (full filename incl. extension)
+  GIFs and other formats are ignored; a file that is not a readable image is
+  skipped. JPEG note: only PNG and BMP are decoded in this build (jpg entries
+  are listed but currently fall back to the placeholder).
 
 FOLDER LAYOUT
   switch.elf   the executable (launch from Aurora File Manager or XeLL)
@@ -55,9 +70,10 @@ CONTROLS
   LB / RB            : previous / next page (library, game info)
 
 LEGAL
-  This project ships NO games, NO firmware, NO encryption keys and NO
-  copyrighted box art. You must supply your own files. The frontend draws
-  neutral placeholders instead of inventing covers.
+  This project ships NO games, NO firmware, NO encryption keys and NO box art.
+  You must supply your own files. Any covers shown are images YOU placed next
+  to your games; Eden never downloads or fabricates artwork, and games without
+  a cover keep a neutral placeholder.
   Licensed GPL-3.0-or-later. Inspired by the Eden emulator project;
   not affiliated with or endorsed by Eden, Nintendo, or Microsoft.
   Not affiliated with the Super Mario 64 PC port or any other project.
