@@ -36,6 +36,12 @@ void        Gfx_Present(GfxContext *g);
 
 void Gfx_Clear(GfxContext *g, uint32_t argb);
 void Gfx_FillRect(GfxContext *g, int x, int y, int w, int h, uint32_t argb);
+
+/* Draws a source image (row-major, straight-alpha 0xAARRGGBB, srcw*srch) into
+ * the destination rectangle (x,y,w,h) using nearest-neighbour scaling and
+ * per-pixel alpha blending over the framebuffer. */
+void Gfx_DrawImage(GfxContext *g, int x, int y, int w, int h,
+                   const uint32_t *src, int srcw, int srch);
 /* Text is drawn with the built-in 5x7 font. `scale` is the integer pixel size
  * of one font pixel. Returns the advance in pixels. */
 int  Gfx_DrawText(GfxContext *g, int x, int y, int scale, uint32_t argb,

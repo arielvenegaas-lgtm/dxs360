@@ -169,6 +169,37 @@ void Gfx_FillRect(GfxContext *g, int x, int y, int w, int h, uint32_t argb) {
     }
 }
 
+void Gfx_DrawImage(GfxContext *g, int x, int y, int w, int h,
+                   const uint32_t *src, int srcw, int srch) {
+    if (!g || !g->shadow || !src || w <= 0 || h <= 0 || srcw <= 0 || srch <= 0)
+        return;
+    int stride = (int)g->w;
+    for (int dy = 0; dy < h; ++dy) {
+        int yy = y + dy;
+        if (yy < 0 || (uint32_t)yy >= g->h) continue;
+        int sy = (int)(((long long)dy * srch) / h);
+        if (sy >= srch) sy = srch - 1;
+        const uint32_t *srow = src + (size_t)sy * srcw;
+        uint32_t *drow = g->shadow + (size_t)yy * stride;
+        for (int dx = 0; dx < w; ++dx) {
+            int xx = x + dx;
+            if (xx < 0 || (uint32_t)xx >= g->w) continue;
+            int sx = (int)(((long long)dx * srcw) / w);
+            if (sx >= srcw) sx = srcw - 1;
+            uint32_t s = srow[sx];
+            uint32_t a = (s >> 24) & 0xFFu;
+            if (a == 0u) continue;
+            if (a == 0xFFu) { drow[xx] = 0xFF000000u | (s & 0x00FFFFFFu); continue; }
+            uint32_t d = drow[xx];
+            uint32_t ia = 255u - a;
+            uint32_t r  = (((s >> 16) & 0xFFu) * a + ((d >> 16) & 0xFFu) * ia + 127u) / 255u;
+            uint32_t gg = (((s >> 8)  & 0xFFu) * a + ((d >> 8)  & 0xFFu) * ia + 127u) / 255u;
+            uint32_t b  = (( s        & 0xFFu) * a + ( d        & 0xFFu) * ia + 127u) / 255u;
+            drow[xx] = 0xFF000000u | (r << 16) | (gg << 8) | b;
+        }
+    }
+}
+
 int Gfx_DrawText(GfxContext *g, int x, int y, int scale, uint32_t argb,
                  const char *text) {
     if (!g || !text || scale < 1) return 0;
