@@ -26,7 +26,7 @@ jobs:
               eden/tests/test_loader.cpp eden/source/core/loader.cpp -o /tmp/test_loader
           /tmp/test_loader
 
-      - name: Host unit tests (image decoder: PNG/BMP)
+      - name: Host unit tests (image decoder - PNG/BMP)
         run: |
           set -e
           # Fixtures are generated with the Python standard library only
