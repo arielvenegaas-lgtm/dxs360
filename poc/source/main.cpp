@@ -4,10 +4,12 @@
  * install (tools/hk_extract.py -> .spr) off a FAT32 USB stick and displays it
  * through the scan-out framebuffer. NO game asset is compiled into this binary.
  *
- * Pipeline:
- *   usb_init() -> find an EHCI mass-storage device -> Fat32_Mount on top of
- *   USBStorage_Read_Sectors() -> Fat32_ReadFile("knight_icon.spr") ->
- *   Img_LoadSpr() -> Gfx_DrawImage(). */
+ * USB note: USBStorage_Init() walks every EHCI host port and may reset a port
+ * that holds a HID pad, so a controller can drop offline while it runs. We do
+ * mass-storage discovery in a bounded phase BEFORE the pad driver is started,
+ * and only re-probe slowly if no drive turned up. That is also why the game
+ * build (xenon/source/input.cpp) never calls USBStorage_Init at all.
+ */
 #include <stdint.h>
 #include <string.h>
 
@@ -41,7 +43,19 @@ int USBStorage_Read_Sectors(int device, unsigned int sector,
 
 static uint8_t  g_filebuf[4u << 20]; /* 4 MiB is plenty for a .spr */
 
-static int g_dev = -1;
+/* Discovery state. */
+static enum {
+    ST_SEARCHING,  /* probing for a mass-storage device */
+    ST_BADSECT,    /* drive found but not 512-byte sectors */
+    ST_MOUNTFAIL,  /* drive found, FAT32 mount failed     */
+    ST_NOFILE,     /* FAT32 mounted, FILE_NAME missing     */
+    ST_BADSPR,     /* file read, decode failed             */
+    ST_OK          /* sprite decoded and ready             */
+} g_state = ST_SEARCHING;
+
+static int      g_dev = -1;
+static uint32_t g_secsz = 0;
+static long     g_filelen = 0;
 
 static int ReadSectors(void *ctx, uint32_t lba, uint32_t count, void *buf) {
     (void)ctx;
@@ -59,20 +73,37 @@ static float NowSeconds(void) {
     return (float)((double)mftb() / (double)PPC_TIMEBASE_FREQ);
 }
 
-static int FindUsbStorage(uint32_t *sector_size) {
-    for (int tries = 0; tries < 240; ++tries) {
-        PollBuses();
-        USBStorage_Init();
-        for (int d = 0; d < 4; ++d) {
-            unsigned int ss = 0;
-            if (USBStorage_Get_Capacity(d, &ss) > 0) {
-                g_dev = d;
-                if (sector_size) *sector_size = ss;
-                return d;
-            }
-        }
+/* Busy-wait (no sleeping primitive in the PoC; mftb is monotonic). */
+static void WaitMs(int ms) {
+    double t0 = (double)mftb() / (double)PPC_TIMEBASE_FREQ;
+    for (;;) {
+        double t = (double)mftb() / (double)PPC_TIMEBASE_FREQ;
+        if (t - t0 >= (double)ms / 1000.0) break;
+        PollBuses(); /* keep the bus serviced while we wait */
     }
-    return -1;
+}
+
+/* One probe pass: poll the buses, scan for a mounted mass-storage device,
+ * then try to read and decode FILE_NAME from its root. */
+static void ProbeOnce(void) {
+    PollBuses();
+    USBStorage_Init();
+
+    for (int d = 0; d < 4; ++d) {
+        unsigned int ss = 0;
+        if (USBStorage_Get_Capacity(d, &ss) <= 0) continue;
+
+        g_dev  = d;
+        g_secsz = ss;
+        if (ss != 512u) { g_state = ST_BADSECT; return; }
+
+        if (!Fat32_Mount(ReadSectors, 0)) { g_state = ST_MOUNTFAIL; return; }
+
+        g_filelen = Fat32_ReadFile(FILE_NAME, g_filebuf, (uint32_t)sizeof(g_filebuf));
+        if (g_filelen <= 0) { g_state = ST_NOFILE; return; }
+        return; /* decoded in the loop once it sees bytes */
+    }
+    g_state = ST_SEARCHING;
 }
 
 /* Minimal integer -> string (no printf: the console hook is closed by gfx). */
@@ -95,32 +126,47 @@ int main(int argc, char **argv) {
 
     xenon_make_it_faster(XENON_SPEED_FULL);
 
-    /* Brings up EHCI + OHCI (usb_init -> EHCI_Init) so mass storage can mount. */
-    Input_Init();
+    /* Bring up EHCI + OHCI ourselves, then hunt for the stick for a few
+     * seconds BEFORE the pad driver starts, so USBStorage_Init's port resets
+     * do not leave a controller half-enumerated. */
+    usb_init();
 
-    uint32_t sector_size = 0;
-    int dev = FindUsbStorage(&sector_size);
+    float deadline = NowSeconds() + 6.0f;
+    while (NowSeconds() < deadline) {
+        ProbeOnce();
+        if (g_state == ST_BADSECT || g_state == ST_MOUNTFAIL || g_state == ST_NOFILE)
+            break;
+        WaitMs(100);
+    }
+
+    /* Pads now. usb_init() is a no-op on the second call. */
+    Input_Init();
+    for (int i = 0; i < 30; ++i) WaitMs(16); /* let HID re-enumerate */
 
     Image img;
     memset(&img, 0, sizeof(img));
-    int mounted = 0;
-    long file_len = 0;
-    int  mounted_fs = 0;
-
-    if (dev >= 0 && sector_size == 512) {
-        if (Fat32_Mount(ReadSectors, 0)) {
-            mounted_fs = 1;
-            file_len = Fat32_ReadFile(FILE_NAME, g_filebuf, (uint32_t)sizeof(g_filebuf));
-            if (file_len > 0 && Img_LoadSpr(g_filebuf, (size_t)file_len, &img))
-                mounted = 1;
-        }
-    }
-
     int scale = 6;
     float prev = NowSeconds();
     float fps = 0.0f; int frames = 0; float win = prev;
+    float last_probe = prev;
 
     for (;;) {
+        /* If we never found a drive, keep re-probing slowly so a stick
+         * plugged in after boot (or a slow enumeration) still shows up.
+         * The long gaps let the pad settle between port resets. */
+        if (g_state == ST_SEARCHING && (prev - last_probe) >= 2.0f) {
+            last_probe = prev;
+            ProbeOnce();
+        }
+
+        /* Decode as soon as a file lands (ProbeOnce stops short of that). */
+        if (g_state == ST_SEARCHING && g_filelen > 0) {
+            if (Img_LoadSpr(g_filebuf, (size_t)g_filelen, &img))
+                g_state = ST_OK;
+            else
+                g_state = ST_BADSPR;
+        }
+
         Input_Poll();
         const PadState *pad = Input_GetPad(0);
         if (pad) {
@@ -136,11 +182,10 @@ int main(int argc, char **argv) {
         Gfx_Clear(gfx, 0xFF0E0E16u);
         int W = (int)Gfx_Width(gfx), H = (int)Gfx_Height(gfx);
 
-        if (mounted) {
+        if (g_state == ST_OK && img.pixels) {
             int w = (int)img.w * scale;
             int h = (int)img.h * scale;
             int x = (W - w) / 2, y = (H - h) / 2;
-            /* frame */
             Gfx_FillRect(gfx, x - 4, y - 4, w + 8, 4, 0xFF3A3A50u);
             Gfx_FillRect(gfx, x - 4, y + h, w + 8, 4, 0xFF3A3A50u);
             Gfx_FillRect(gfx, x - 4, y, 4, h, 0xFF3A3A50u);
@@ -152,7 +197,7 @@ int main(int argc, char **argv) {
             Append(b, &n, FILE_NAME "  ");
             AppendInt(b, &n, (int)img.w); Append(b, &n, "x"); AppendInt(b, &n, (int)img.h);
             Append(b, &n, "  x"); AppendInt(b, &n, scale);
-            Append(b, &n, "  "); AppendInt(b, &n, (int)file_len); Append(b, &n, " bytes");
+            Append(b, &n, "  "); AppendInt(b, &n, (int)g_filelen); Append(b, &n, " bytes");
             b[n] = 0;
             Gfx_DrawText(gfx, 16, 48, 2, 0xFFB8B8CCu, b);
             Gfx_DrawText(gfx, 16, 72, 2, 0xFF8080A0u, "A = zoom in   B = zoom out");
@@ -161,21 +206,47 @@ int main(int argc, char **argv) {
             f[n] = 0;
             Gfx_DrawText(gfx, 16, 96, 2, 0xFF6080A0u, f);
         } else {
-            Gfx_DrawText(gfx, 40, 40, 3, 0xFFFF7A7Au, "SPRITE POC: no asset loaded");
-            if (dev < 0)
-                Gfx_DrawText(gfx, 40, 90, 2, 0xFFC0C0C0u, "no USB mass-storage device found");
-            else if (sector_size != 512) {
-                char m[64]; int n = 0;
-                Append(m, &n, "unsupported sector size ");
-                AppendInt(m, &n, (int)sector_size);
-                m[n] = 0;
-                Gfx_DrawText(gfx, 40, 90, 2, 0xFFC0C0C0u, m);
-            } else if (!mounted_fs)
-                Gfx_DrawText(gfx, 40, 90, 2, 0xFFC0C0C0u, "FAT32 mount failed (need FAT32, MBR)");
-            else if (file_len <= 0)
-                Gfx_DrawText(gfx, 40, 90, 2, 0xFFC0C0C0u, "put " FILE_NAME " in the USB root");
-            else
-                Gfx_DrawText(gfx, 40, 90, 2, 0xFFC0C0C0u, "failed to decode " FILE_NAME);
+            Gfx_DrawText(gfx, 40, 32, 3, 0xFFFF7A7Au, "SPRITE POC: no asset loaded");
+            Gfx_DrawText(gfx, 16, 80, 2, 0xFFC0C0C0u, "status:");
+
+            char m[96]; int n = 0;
+            switch (g_state) {
+            case ST_SEARCHING:
+                Append(m, &n, "searching USB (try a FAT32 stick, MBR)");
+                break;
+            case ST_BADSECT:
+                Append(m, &n, "drive seen, unsupported sector size ");
+                AppendInt(m, &n, (int)g_secsz);
+                break;
+            case ST_MOUNTFAIL:
+                Append(m, &n, "FAT32 mount failed (drive is not FAT32/MBR)");
+                break;
+            case ST_NOFILE:
+                Append(m, &n, FILE_NAME " not in the USB root");
+                break;
+            case ST_BADSPR:
+                Append(m, &n, "could not decode " FILE_NAME);
+                break;
+            default:
+                break;
+            }
+            m[n] = 0;
+            Gfx_DrawText(gfx, 16, 112, 2, 0xFFB8B8CCu, m);
+
+            char d[64]; n = 0;
+            Append(d, &n, "mass-storage device: ");
+            Append(d, &n, (g_dev >= 0) ? "YES" : "no");
+            if (g_dev >= 0) {
+                Append(d, &n, "  sectorsize ");
+                AppendInt(d, &n, (int)g_secsz);
+            }
+            d[n] = 0;
+            Gfx_DrawText(gfx, 16, 140, 2, 0xFF8080A0u, d);
+
+            char f[48]; n = 0;
+            Append(f, &n, "FPS "); AppendInt(f, &n, (int)(fps + 0.5f));
+            f[n] = 0;
+            Gfx_DrawText(gfx, 16, H - 32, 2, 0xFF6080A0u, f);
         }
 
         Gfx_Present(gfx);

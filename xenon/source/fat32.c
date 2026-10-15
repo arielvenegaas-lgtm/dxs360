@@ -4,7 +4,7 @@
 #include "fat32.h"
 
 #define SECSZ        512u
-#define FAT32_EOC    0x0FFFFFF8u
+#define FAT32_BAD    0x0FFFFFF7u /* bad cluster; >= this terminates a chain */
 #define ATTR_LFN     0x0Fu
 #define ATTR_DIR     0x10u
 #define ATTR_VOLUME  0x08u
@@ -17,11 +17,22 @@ static uint32_t g_fat_sz;      /* sectors per FAT            */
 static uint32_t g_num_fats;
 static uint32_t g_data_start;  /* first data LBA             */
 static uint32_t g_root_clus;
+static uint32_t g_clus_cnt;    /* data clusters, 0 if unknown */
 
 static uint8_t g_sec[SECSZ];
 
 static int ReadSec(uint32_t lba, void *buf) {
     return g_rd(g_ctx, lba, 1u, buf);
+}
+
+/* A chain terminator: end-of-chain markers, the bad-cluster marker, or any
+ * cluster past the end of the volume. Guarding this here keeps a corrupt FAT
+ * from ever producing a wild LBA (ClusterToLba would otherwise multiply a
+ * garbage index straight into the disc). */
+static int IsEnd(uint32_t clus) {
+    if (clus >= FAT32_BAD) return 1;
+    if (g_clus_cnt != 0 && clus >= 2u + g_clus_cnt) return 1;
+    return 0;
 }
 
 static uint32_t ClusterToLba(uint32_t n) {
@@ -32,7 +43,7 @@ static uint32_t FatNext(uint32_t clus) {
     uint32_t off = clus * 4u;
     uint32_t lba = g_fat_start + off / SECSZ;
     uint32_t o   = off % SECSZ;
-    if (!ReadSec(lba, g_sec)) return FAT32_EOC;
+    if (!ReadSec(lba, g_sec)) return FAT32_BAD; /* stop the chain on I/O error */
     uint32_t v = (uint32_t)g_sec[o] | ((uint32_t)g_sec[o + 1] << 8) |
                  ((uint32_t)g_sec[o + 2] << 16) | ((uint32_t)g_sec[o + 3] << 24);
     return v & 0x0FFFFFFFu;
@@ -62,6 +73,12 @@ static void ParseBpb(void) {
     g_data_start = res + g_num_fats * g_fat_sz;
     g_root_clus = (uint32_t)b[44] | ((uint32_t)b[45] << 8) |
                   ((uint32_t)b[46] << 16) | ((uint32_t)b[47] << 24);
+    uint32_t tot32 = (uint32_t)b[32] | ((uint32_t)b[33] << 8) |
+                     ((uint32_t)b[34] << 16) | ((uint32_t)b[35] << 24);
+    if (tot32 > g_data_start)
+        g_clus_cnt = (tot32 - g_data_start) / (g_spc ? g_spc : 1u);
+    else
+        g_clus_cnt = 0; /* malformed; fall back to no bound */
 }
 
 int Fat32_Mount(Fat32ReadSectors rd, void *ctx) {
@@ -74,12 +91,17 @@ int Fat32_Mount(Fat32ReadSectors rd, void *ctx) {
     if (!LooksFat32(0)) {
         if (!ReadSec(0, g_sec)) return 0;
         if (g_sec[510] != 0x55 || g_sec[511] != 0xAA) return 0;
-        /* first partition entry at 0x1BE */
-        uint32_t ptype = g_sec[0x1C2];
-        if (ptype == 0) return 0;
-        start = (uint32_t)g_sec[0x1C6] | ((uint32_t)g_sec[0x1C7] << 8) |
-                ((uint32_t)g_sec[0x1C8] << 16) | ((uint32_t)g_sec[0x1C9] << 24);
-        if (!LooksFat32(start)) return 0;
+        /* Try all four primary partition entries; FAT32 is not always first. */
+        int found = 0;
+        for (int i = 0; i < 4; ++i) {
+            const uint8_t *pe = g_sec + 0x1BE + i * 16;
+            if (pe[4] == 0) continue;                    /* empty slot     */
+            uint32_t s = (uint32_t)pe[8] | ((uint32_t)pe[9] << 8) |
+                         ((uint32_t)pe[10] << 16) | ((uint32_t)pe[11] << 24);
+            if (s == 0) continue;
+            if (LooksFat32(s)) { start = s; found = 1; break; }
+        }
+        if (!found) return 0;
     }
     if (!ReadSec(start, g_sec)) return 0;
     ParseBpb();
@@ -87,6 +109,7 @@ int Fat32_Mount(Fat32ReadSectors rd, void *ctx) {
     g_fat_start += start;
     g_data_start += start;
     if (g_spc == 0 || g_num_fats == 0 || g_fat_sz == 0) return 0;
+    if (g_fat_start == start || g_root_clus < 2u) return 0; /* reserved==0 or junk */
     return 1;
 }
 
@@ -139,7 +162,7 @@ static int FindEntry(uint32_t dir_clus, const char *comp,
     memset(lfn, 0, sizeof(lfn));
     uint32_t clus = dir_clus;
     uint32_t guard = 0;
-    while (clus >= 2u && clus < FAT32_EOC && guard++ < 65536u) {
+    while (clus >= 2u && !IsEnd(clus) && guard++ < 65536u) {
         uint32_t lba = ClusterToLba(clus);
         for (uint32_t s = 0; s < g_spc; ++s) {
             if (!ReadSec(lba + s, g_sec)) return 0;
@@ -198,7 +221,7 @@ long Fat32_ReadFile(const char *path, void *buf, uint32_t maxlen) {
             uint32_t left = fs; if (left > maxlen) left = maxlen;
             uint32_t got = 0;
             uint32_t c = clus; uint32_t guard = 0;
-            while (c >= 2u && c < FAT32_EOC && got < left && guard++ < 65536u) {
+            while (c >= 2u && !IsEnd(c) && got < left && guard++ < 65536u) {
                 uint32_t lba = ClusterToLba(c);
                 for (uint32_t s = 0; s < g_spc && got < left; ++s) {
                     if (!ReadSec(lba + s, g_sec)) return -1;
