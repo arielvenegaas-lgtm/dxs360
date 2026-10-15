@@ -158,21 +158,14 @@ void Gfx_Clear(GfxContext *g, uint32_t argb) {
 
 void Gfx_FillRect(GfxContext *g, int x, int y, int w, int h, uint32_t argb) {
     if (!g || !g->shadow || w <= 0 || h <= 0) return;
-
-    /* Clip the rectangle to the framebuffer once, up front, so the inner loop
-     * is a straight run of stores with no per-pixel bounds test. Gfx_DrawText
-     * calls this once per lit font pixel, so the savings add up. */
-    int x0 = x < 0 ? 0 : x;
-    int y0 = y < 0 ? 0 : y;
-    int x1 = x + w; if (x1 > (int)g->w) x1 = (int)g->w;
-    int y1 = y + h; if (y1 > (int)g->h) y1 = (int)g->h;
-    if (x0 >= x1 || y0 >= y1) return;
-
     int stride = (int)g->w;
-    int span = x1 - x0;
-    for (int yy = y0; yy < y1; ++yy) {
-        uint32_t *row = g->shadow + (size_t)yy * stride + x0;
-        for (int i = 0; i < span; ++i) row[i] = argb;
+    for (int yy = y; yy < y + h; ++yy) {
+        if (yy < 0 || (uint32_t)yy >= g->h) continue;
+        uint32_t *row = g->shadow + (size_t)yy * stride;
+        for (int xx = x; xx < x + w; ++xx) {
+            if (xx < 0 || (uint32_t)xx >= g->w) continue;
+            row[xx] = argb;
+        }
     }
 }
 
