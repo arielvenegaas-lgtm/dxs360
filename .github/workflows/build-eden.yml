@@ -33,6 +33,34 @@ jobs:
               eden/tests/test_input.cpp xenon/source/input.cpp -o /tmp/test_input
           /tmp/test_input
 
+      - name: Host fuzz harness (FAT32 LFN + ROM scan path)
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dosfstools mtools
+          # 64 MB FAT32, 1 sector/cluster so a 255-char name spans the full
+          # 20-entry LFN sequence range (the max LfnAppend13 accepts).
+          dd if=/dev/zero of=/tmp/roms.img bs=1M count=64 status=none
+          mkfs.fat -F 32 -f 2 -s 1 /tmp/roms.img >/dev/null
+          export MTOOLS_SKIP_CHECK=1
+          mmd -i /tmp/roms.img ::roms
+          printf 'PFS0' > /tmp/pfs0.hdr
+          LONG=$(python3 -c "print('VeryLongGameName_'+'X'*234+'.nsp')")
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/${LONG}"
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/Cave Story+ [0100B7D0022EE000][v0][US].nsp"
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/[0100B7D0022EE000]v1EU.nro"
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/a.nsp"
+          gcc -std=c99 -Wall -g -O1 -fsanitize=address,undefined \
+              -fno-omit-frame-pointer -c xenon/source/fat32.c \
+              -I xenon/source -o /tmp/fat32_san.o
+          g++ -std=c++11 -Wall -g -O1 -fsanitize=address,undefined \
+              -fno-omit-frame-pointer \
+              -I eden/source/game -I eden/source/core -I xenon/source \
+              eden/tests/fuzz_scan.cpp eden/source/game/library.cpp \
+              eden/source/core/loader.cpp /tmp/fat32_san.o -o /tmp/fuzz_scan
+          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+            /tmp/fuzz_scan /tmp/roms.img
+
       - name: Pull libXenon Docker image
         run: docker pull free60/libxenon:latest
 
