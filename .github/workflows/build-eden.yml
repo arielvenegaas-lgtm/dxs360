@@ -1,0 +1,76 @@
+name: build-eden (Switch frontend ELF + package)
+
+# Builds the Eden360 frontend with libXenon and packages a release ZIP laid out
+# as eden/ (switch.elf + roms/ + keys/ + assets/ + README.txt).
+#
+# The ZIP and the ELF contain NO games, firmware, prod.keys or copyrighted
+# art. Users supply their own files.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-eden:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pull libXenon Docker image
+        run: docker pull free60/libxenon:latest
+
+      - name: Build with libXenon
+        run: |
+          docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
+            bash -lc 'set -e; echo "DEVKITXENON=$DEVKITXENON"; make -C eden'
+
+      - name: Verify the output is a genuine PPC ELF (not a host binary)
+        run: |
+          set -e
+          BIN=eden/switch.elf32
+          test -f "$BIN"
+          file "$BIN" | tee /tmp/file.txt
+          grep -q "ELF 32-bit" /tmp/file.txt
+          grep -qE "PowerPC|PPC" /tmp/file.txt
+          readelf -h "$BIN" | tee /tmp/elf.txt
+          grep -qE "PowerPC" /tmp/elf.txt
+          if grep -qE "x86-64|Intel 80386|Advanced Micro" /tmp/elf.txt; then
+            echo "::error::Output is an x86 host binary, not a 360 ELF"; exit 1
+          fi
+          echo "OK: $(stat -c %s "$BIN") bytes"
+
+      - name: Package release ZIP (eden/ layout)
+        run: |
+          set -e
+          rm -rf stage
+          mkdir -p stage/eden
+          cp eden/switch.elf32 stage/eden/switch.elf
+          cp eden/dist/README.txt stage/eden/README.txt
+          cp -r eden/dist/roms   stage/eden/roms
+          cp -r eden/dist/keys   stage/eden/keys
+          cp -r eden/dist/assets stage/eden/assets
+          cp eden/LICENSE.txt    stage/eden/LICENSE.txt
+          # Guarantee the required folders survive even if empty.
+          mkdir -p stage/eden/roms stage/eden/keys \
+                   stage/eden/assets/icons stage/eden/assets/backgrounds \
+                   stage/eden/assets/fonts
+          # Safety: never ship ROMs/keys even if someone drops them in dist/.
+          find stage/eden/roms stage/eden/keys -type f \
+               ! -name README.txt ! -name .gitkeep -delete
+          ( cd stage && zip -r ../eden-frontend.zip eden )
+          unzip -l eden-frontend.zip
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-frontend
+          path: eden-frontend.zip
+
+      - name: Upload raw ELF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-switch-elf
+          path: stage/eden/switch.elf

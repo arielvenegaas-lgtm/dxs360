@@ -236,3 +236,80 @@ long Fat32_ReadFile(const char *path, void *buf, uint32_t maxlen) {
     }
     return -1;
 }
+
+/* Assembles the raw 8.3 name of a directory entry (no case folding). */
+static void BuildShortName(const uint8_t *e, char *out) {
+    int n = 0;
+    for (int i = 0; i < 8 && e[i] != ' '; ++i) out[n++] = (char)e[i];
+    if (e[8] != ' ') {
+        out[n++] = '.';
+        for (int i = 8; i < 11 && e[i] != ' '; ++i) out[n++] = (char)e[i];
+    }
+    out[n] = 0;
+}
+
+long Fat32_ListDir(const char *path, Fat32DirFn fn, void *ctx) {
+    /* `fn` may be null: then this just resolves the directory and returns its
+     * entry count (>= 0) or -1 if it does not exist. */
+
+    /* Resolve the directory path (empty / "/" = root). */
+    uint32_t dir_clus = g_root_clus;
+    int is_dir = 1;
+    const char *p = path ? path : "";
+    while (*p) {
+        char comp[128];
+        int n = 0;
+        while (*p && *p != '/' && n < 127) comp[n++] = *p++;
+        comp[n] = 0;
+        if (*p == '/') ++p;
+        if (comp[0] == 0) continue;
+        if (!is_dir) return -1;
+        uint32_t fc = 0, fs = 0; int fd = 0;
+        if (!FindEntry(dir_clus, comp, &fc, &fs, &fd)) return -1;
+        if (!fd) return -1;                    /* not a directory */
+        dir_clus = fc;
+    }
+
+    char lfn[261];
+    memset(lfn, 0, sizeof(lfn));
+    long count = 0;
+    uint32_t clus = dir_clus;
+    uint32_t guard = 0;
+    while (clus >= 2u && !IsEnd(clus) && guard++ < 65536u) {
+        uint32_t lba = ClusterToLba(clus);
+        for (uint32_t s = 0; s < g_spc; ++s) {
+            if (!ReadSec(lba + s, g_sec)) return -1;
+            for (uint32_t o = 0; o < SECSZ; o += 32u) {
+                const uint8_t *e = g_sec + o;
+                if (e[0] == 0x00) return count;             /* end of dir */
+                if (e[0] == 0xE5) { lfn[0] = 0; continue; }  /* deleted */
+                uint8_t attr = e[11];
+                if (attr == ATTR_LFN) {
+                    int seq = e[0] & 0x3F;
+                    if (seq >= 1 && seq <= 20) LfnAppend13(lfn, seq, e);
+                    continue;
+                }
+                if (e[0] == '.') { lfn[0] = 0; continue; }   /* '.' / '..' */
+                if (attr & ATTR_VOLUME) { lfn[0] = 0; continue; }
+
+                char name[288];
+                if (lfn[0]) {
+                    int i = 0;
+                    for (; lfn[i] && i < 255; ++i) name[i] = lfn[i];
+                    name[i] = 0;
+                } else {
+                    BuildShortName(e, name);
+                }
+                uint32_t size = (uint32_t)e[28] | ((uint32_t)e[29] << 8) |
+                                ((uint32_t)e[30] << 16) | ((uint32_t)e[31] << 24);
+                int is_this_dir = (attr & ATTR_DIR) ? 1 : 0;
+                lfn[0] = 0;
+
+                ++count;
+                if (fn && fn(ctx, name, size, is_this_dir) == 0) return count;
+            }
+        }
+        clus = FatNext(clus);
+    }
+    return count;
+}

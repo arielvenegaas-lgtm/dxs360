@@ -33,6 +33,17 @@ int Fat32_Mount(Fat32ReadSectors rd, void *ctx);
  * read, or -1 on error / not found. */
 long Fat32_ReadFile(const char *path, void *buf, uint32_t maxlen);
 
+/* Callback for Fat32_ListDir. `name` is the entry name (long name if present,
+ * else 8.3); `is_dir` is non-zero for a directory. Return non-zero to keep
+ * enumerating, 0 to stop early. */
+typedef int (*Fat32DirFn)(void *ctx, const char *name, uint32_t size,
+                          int is_dir);
+
+/* Enumerates the directory at `path` ("" or "/" = root). Returns the number of
+ * entries listed, or -1 if `path` is not an existing directory. '.' and '..'
+ * and volume-label entries are skipped. */
+long Fat32_ListDir(const char *path, Fat32DirFn fn, void *ctx);
+
 #ifdef __cplusplus
 }
 #endif
