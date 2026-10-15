@@ -7,6 +7,7 @@
 #include "input.h"
 #include "nav.h"
 #include "library.h"
+#include "fs.h"
 
 #define EDEN_APPNAME  "Eden"
 #define EDEN_EDITION  "Xbox 360 Frontend"
