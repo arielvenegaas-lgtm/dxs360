@@ -113,8 +113,13 @@ void Input_Poll(void) {
             p.rt = (d.rt > TRIGGER_THRESH) ? d.rt : 0;
         }
 
-        p.pressed  = (uint16_t)(p.buttons & ~g_prev[i].buttons);
-        p.released = (uint16_t)(~p.buttons &  g_prev[i].buttons);
+        /* Edge detection must compare against the PREVIOUS frame's state.
+         * g_cur[i] still holds last frame here; g_prev was one frame older,
+         * which made every press fire for two frames in a row (so a screen
+         * that acts on `accept` "confirmed" itself again and closed). */
+        uint16_t prev_buttons = (uint16_t)g_cur[i].buttons;
+        p.pressed  = (uint16_t)(p.buttons & ~prev_buttons);
+        p.released = (uint16_t)(~p.buttons &  prev_buttons);
 
         g_prev[i] = g_cur[i];
         g_cur[i]  = p;

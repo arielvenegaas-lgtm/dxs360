@@ -26,6 +26,13 @@ jobs:
               eden/tests/test_loader.cpp eden/source/core/loader.cpp -o /tmp/test_loader
           /tmp/test_loader
 
+      - name: Host unit tests (controller edge detection)
+        run: |
+          set -e
+          g++ -std=c++11 -Wall -I eden/tests/stub -I src \
+              eden/tests/test_input.cpp xenon/source/input.cpp -o /tmp/test_input
+          /tmp/test_input
+
       - name: Pull libXenon Docker image
         run: docker pull free60/libxenon:latest
 
