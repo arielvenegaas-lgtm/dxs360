@@ -42,8 +42,8 @@ library, with the emulation core developed behind an honest stub.
 
 1. Open the **Actions** tab and pick a green run of
    **`build-eden (Switch frontend ELF + package)`**.
-2. Download the **`eden-frontend`** artifact (or **`eden-switch-elf`** for the
-   bare ELF) and unzip it. You get an `eden/` folder.
+2. Download the **`eden-frontend`** artifact and unzip it. You get an `eden/`
+   folder containing `switch.elf` plus `roms/`, `keys/` and `assets/`.
 3. Copy the **`eden`** folder to a FAT32 (MBR) USB stick.
 4. Optionally drop your own game files into `eden/roms/`.
 5. On the console, open **Aurora → File Manager**, browse to

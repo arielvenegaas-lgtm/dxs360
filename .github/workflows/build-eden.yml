@@ -68,9 +68,3 @@ jobs:
         with:
           name: eden-frontend
           path: eden-frontend.zip
-
-      - name: Upload raw ELF artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: eden-switch-elf
-          path: stage/eden/switch.elf
