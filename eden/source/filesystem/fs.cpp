@@ -131,26 +131,146 @@ static int CountKeyEntries(const unsigned char *b, long n) {
     return count;
 }
 
-/* Looks for a prod.keys file under keys/ and reports how many entries it has.
+/* Short summary of the volume root (first few names) for on-screen
+ * diagnostics. fat32.c keeps its state in globals, so directory listings are
+ * never nested: each listing is collected fully before the next begins. */
+#define FS_ROOT_NAMES 8
+static char g_root_summary[160];
+const char *Fs_RootSummary(void) { return g_root_summary; }
+
+static char LowerCh(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+static int CiEq(const char *a, const char *b) {
+    for (;;) {
+        if (LowerCh(*a) != LowerCh(*b)) return 0;
+        if (!*a) return 1;
+        ++a; ++b;
+    }
+}
+static int CiHasKey(const char *s) {           /* contains "key" (case-folded) */
+    for (; *s; ++s)
+        if (LowerCh(s[0])=='k' && LowerCh(s[1])=='e' && LowerCh(s[2])=='y') return 1;
+    return 0;
+}
+static int CiEndsKeys(const char *s) {         /* ends with ".keys" */
+    int n = 0; while (s[n]) ++n;
+    if (n < 5) return 0;
+    const char *e = s + n - 5;
+    return e[0]=='.' && LowerCh(e[1])=='k' && LowerCh(e[2])=='e' &&
+           LowerCh(e[3])=='y' && LowerCh(e[4])=='s';
+}
+static int CiIsProdKeys(const char *s) {
+    return CiEq(s, "prod.keys");
+}
+
+struct NameListCtx { char names[FS_ROOT_NAMES][80]; int is_dir[FS_ROOT_NAMES]; int n; };
+static int NameListCb(void *ctx, const char *name, uint32_t size, int is_dir) {
+    (void)size;
+    struct NameListCtx *c = (struct NameListCtx *)ctx;
+    if (c->n >= FS_ROOT_NAMES) return 0;
+    int i = 0; for (; name[i] && i < 79; ++i) c->names[c->n][i] = name[i];
+    c->names[c->n][i] = 0;
+    c->is_dir[c->n] = is_dir;
+    ++c->n;
+    return 1;
+}
+
+/* Lists `dir` and copies the name of the first `*.keys` file into `out`. */
+static int FindKeysInDir(const char *dir, char *out, int outsz) {
+    struct NameListCtx c; c.n = 0;
+    if (Fs_ListDir(dir, NameListCb, &c) < 0) return 0;
+    for (int i = 0; i < c.n; ++i) {
+        if (!c.is_dir[i] && (CiIsProdKeys(c.names[i]) || CiEndsKeys(c.names[i]))) {
+            int k = 0; for (; c.names[i][k] && k < outsz - 1; ++k) out[k] = c.names[i][k];
+            out[k] = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Looks for a prod.keys file and reports how many entries it has.
  * Informational only: this build does not use keys. */
 static void ProbeKeys(void) {
     static const char *cands[] = {
-        "keys/prod.keys", "KEYS/PROD.KEYS", "keys/PROD.KEYS",
-        "eden/keys/prod.keys", "Eden/keys/prod.keys", "EDEN/KEYS/PROD.KEYS",
-        "prod.keys", "PROD.KEYS"
+        "keys/prod.keys", "KEYS/PROD.KEYS", "Keys/prod.keys", "keys/PROD.KEYS",
+        "prod.keys", "PROD.KEYS", "yuzu/keys/prod.keys",
+        "eden/keys/prod.keys", "Eden/keys/prod.keys", "EDEN/KEYS/PROD.KEYS"
     };
     g_keys = -1;
-    for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]); ++i) {
+    char diag[192]; diag[0] = 0;
+
+    /* 1) Fast path: known relative locations. */
+    for (unsigned i = 0; i < sizeof(cands)/sizeof(cands[0]); ++i) {
         long n = Fs_ReadFile(cands[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
         if (n > 0) {
             g_keys = CountKeyEntries(g_keybuf, n);
-            char buf[64];
-            snprintf(buf, sizeof(buf), "prod.keys: %d keys", g_keys);
+            char buf[80];
+            snprintf(buf, sizeof(buf), "prod.keys: %d keys (%s)", g_keys, cands[i]);
             SetKeysStatus(buf);
+            snprintf(diag, sizeof(diag), "found prod.keys at %s (%ld bytes)", cands[i], n);
+            SetDiag(diag);
             return;
         }
     }
+
+    /* 2) Enumerate the volume root once. */
+    struct NameListCtx root; root.n = 0;
+    Fs_ListDir("", NameListCb, &root);
+
+    /* Build the on-screen root summary. */
+    {
+        int off = 0;
+        for (int i = 0; i < root.n && off < (int)sizeof(g_root_summary) - 12; ++i) {
+            int w = snprintf(g_root_summary + off, sizeof(g_root_summary) - off,
+                             "%s%s%s", root.names[i], root.is_dir[i] ? "/" : "",
+                             (i + 1 < root.n) ? " " : "");
+            if (w <= 0) break;
+            off += w;
+        }
+        if (off == 0) snprintf(g_root_summary, sizeof(g_root_summary), "(root empty)");
+    }
+
+    /* 3) Look for `*.keys` directly in the root. */
+    for (int i = 0; i < root.n; ++i) {
+        if (!root.is_dir[i] && (CiIsProdKeys(root.names[i]) || CiEndsKeys(root.names[i]))) {
+            long n = Fs_ReadFile(root.names[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
+            if (n > 0) {
+                g_keys = CountKeyEntries(g_keybuf, n);
+                snprintf(diag, sizeof(diag), "found %s (%ld bytes)", root.names[i], n);
+                SetDiag(diag);
+                goto done;
+            }
+        }
+    }
+
+    /* 4) Any top-level directory whose name mentions "key". */
+    for (int i = 0; i < root.n; ++i) {
+        if (!root.is_dir[i] || !CiHasKey(root.names[i])) continue;
+        char file[80];
+        if (FindKeysInDir(root.names[i], file, sizeof(file))) {
+            char path[FS_PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", root.names[i], file);
+            long n = Fs_ReadFile(path, g_keybuf, (uint32_t)sizeof(g_keybuf));
+            if (n > 0) {
+                g_keys = CountKeyEntries(g_keybuf, n);
+                snprintf(diag, sizeof(diag), "found %s (%ld bytes)", path, n);
+                SetDiag(diag);
+                goto done;
+            }
+        }
+    }
+
     SetKeysStatus("prod.keys: not found");
+    snprintf(diag, sizeof(diag), "prod.keys not found; root: %s", g_root_summary);
+    SetDiag(diag);
+    return;
+
+done:
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "prod.keys: %d keys", g_keys);
+        SetKeysStatus(buf);
+    }
 }
 
 /* Returns 1 if `path` is an existing directory. */

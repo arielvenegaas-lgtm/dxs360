@@ -81,28 +81,9 @@ static void ParseBpb(void) {
         g_clus_cnt = 0; /* malformed; fall back to no bound */
 }
 
-int Fat32_Mount(Fat32ReadSectors rd, void *ctx) {
-    g_rd = rd;
-    g_ctx = ctx;
-    if (!rd) return 0;
-
-    /* Superfloppy (VBR at LBA 0) or MBR partitioned? */
-    uint32_t start = 0;
-    if (!LooksFat32(0)) {
-        if (!ReadSec(0, g_sec)) return 0;
-        if (g_sec[510] != 0x55 || g_sec[511] != 0xAA) return 0;
-        /* Try all four primary partition entries; FAT32 is not always first. */
-        int found = 0;
-        for (int i = 0; i < 4; ++i) {
-            const uint8_t *pe = g_sec + 0x1BE + i * 16;
-            if (pe[4] == 0) continue;                    /* empty slot     */
-            uint32_t s = (uint32_t)pe[8] | ((uint32_t)pe[9] << 8) |
-                         ((uint32_t)pe[10] << 16) | ((uint32_t)pe[11] << 24);
-            if (s == 0) continue;
-            if (LooksFat32(s)) { start = s; found = 1; break; }
-        }
-        if (!found) return 0;
-    }
+/* Parses the BPB at `start` into the globals. Returns 1 if it is a usable
+ * FAT32 volume. */
+static int MountPartition(uint32_t start) {
     if (!ReadSec(start, g_sec)) return 0;
     ParseBpb();
     /* Rebase everything by the partition start. */
@@ -110,6 +91,93 @@ int Fat32_Mount(Fat32ReadSectors rd, void *ctx) {
     g_data_start += start;
     if (g_spc == 0 || g_num_fats == 0 || g_fat_sz == 0) return 0;
     if (g_fat_start == start || g_root_clus < 2u) return 0; /* reserved==0 or junk */
+    return 1;
+}
+
+/* True if the currently-mounted root contains a folder we care about. Used to
+ * pick the right FAT32 partition on a multi-partition drive (very common: a
+ * small empty FAT32 partition comes first, the data partition second). */
+static int RootHasMarker(void) {
+    static const char *m[] = { "roms", "ROMs", "keys", "games", "switch" };
+    for (unsigned i = 0; i < sizeof(m) / sizeof(m[0]); ++i)
+        if (Fat32_ListDir(m[i], 0, 0) != -1) return 1;
+    return 0;
+}
+
+#define FAT32_MAX_CAND 16
+
+/* Collects FAT32 partition start LBAs: all four primary entries, then any
+ * extended (0x05/0x0F/0x85) partition's logical volumes via the EBR chain. */
+static int CollectPartitions(uint32_t *out, int max) {
+    int n = 0;
+    uint8_t tbl[SECSZ];
+    /* Copy the table first: LooksFat32() reuses g_sec, so we must not read
+     * partition entries out of it after the first probe. */
+    if (!g_rd(g_ctx, 0, 1, tbl)) return 0;
+    if (tbl[510] != 0x55 || tbl[511] != 0xAA) return 0;
+
+    for (int i = 0; i < 4; ++i) {
+        const uint8_t *pe = tbl + 0x1BE + i * 16;
+        uint8_t type = pe[4];
+        if (type == 0) continue;
+        uint32_t s = (uint32_t)pe[8] | ((uint32_t)pe[9] << 8) |
+                     ((uint32_t)pe[10] << 16) | ((uint32_t)pe[11] << 24);
+        if (s == 0) continue;
+        if (type == 0x05 || type == 0x0F || type == 0x85) {
+            /* Walk the extended partition's EBR chain. Offsets are relative to
+             * the extended partition base, not to each EBR. */
+            uint32_t base = s;
+            uint32_t ebr = s;
+            for (int g = 0; g < 16 && ebr; ++g) {
+                uint8_t e[SECSZ];
+                if (!g_rd(g_ctx, ebr, 1, e)) break;
+                if (e[510] != 0x55 || e[511] != 0xAA) break;
+                const uint8_t *l = e + 0x1BE;
+                uint8_t lt = l[4];
+                uint32_t lrel = (uint32_t)l[8] | ((uint32_t)l[9] << 8) |
+                                ((uint32_t)l[10] << 16) | ((uint32_t)l[11] << 24);
+                const uint8_t *nx = e + 0x1CE;
+                uint8_t nt = nx[4];
+                uint32_t nrel = (uint32_t)nx[8] | ((uint32_t)nx[9] << 8) |
+                                ((uint32_t)nx[10] << 16) | ((uint32_t)nx[11] << 24);
+                if (lt && lt != 0x05 && lt != 0x0F && lt != 0x85 &&
+                    n < max && LooksFat32(base + lrel)) {
+                    out[n++] = base + lrel;
+                }
+                ebr = (nt && nrel) ? base + nrel : 0;
+            }
+        } else if (n < max && LooksFat32(s)) {
+            out[n++] = s;
+        }
+    }
+    return n;
+}
+
+int Fat32_Mount(Fat32ReadSectors rd, void *ctx) {
+    g_rd = rd;
+    g_ctx = ctx;
+    if (!rd) return 0;
+
+    /* Superfloppy (VBR at LBA 0): no partition table at all. */
+    if (LooksFat32(0)) {
+        if (MountPartition(0)) return 1;
+    }
+
+    uint32_t cand[FAT32_MAX_CAND];
+    int nc = CollectPartitions(cand, FAT32_MAX_CAND);
+    if (nc == 0) return 0;
+
+    /* Prefer the first partition that looks like a game/data volume; otherwise
+     * fall back to the first usable FAT32 partition. */
+    uint32_t first_ok = 0, chosen = 0;
+    for (int i = 0; i < nc; ++i) {
+        if (!MountPartition(cand[i])) continue;
+        if (first_ok == 0) first_ok = cand[i];
+        if (RootHasMarker()) { chosen = cand[i]; break; }
+    }
+    if (chosen == 0) chosen = first_ok;
+    if (chosen == 0) return 0;
+    if (!MountPartition(chosen)) return 0;   /* re-establish globals */
     return 1;
 }
 

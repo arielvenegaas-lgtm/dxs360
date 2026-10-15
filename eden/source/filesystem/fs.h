@@ -61,3 +61,6 @@ const char *Fs_DeviceType(void);
 
 /* Returns last error/diagnostic message for the last operation ("" if none). */
 const char *Fs_LastDiag(void);
+
+/* Short space-separated list of top-level entries on the mounted volume. */
+const char *Fs_RootSummary(void);

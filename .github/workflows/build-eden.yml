@@ -61,6 +61,47 @@ jobs:
           UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             /tmp/fuzz_scan /tmp/roms.img
 
+      - name: Host test (FAT32 multi-partition selection)
+        run: |
+          set -e
+          export MTOOLS_SKIP_CHECK=1
+          # Two-partition MBR image: a small EMPTY FAT32 partition first, the
+          # real data (roms/keys) on the second partition. Eden used to mount
+          # the first one and then report "no roms" / "prod.keys not found".
+          dd if=/dev/zero of=/tmp/p1.img bs=1M count=32 status=none
+          mkfs.fat -F 32 -f 2 -s 2 /tmp/p1.img >/dev/null
+          dd if=/dev/zero of=/tmp/p2.img bs=1M count=32 status=none
+          mkfs.fat -F 32 -f 2 -s 2 /tmp/p2.img >/dev/null
+          mmd -i /tmp/p2.img ::roms
+          mmd -i /tmp/p2.img ::keys
+          printf 'PFS0' > /tmp/pfs0.hdr
+          mcopy -i /tmp/p2.img /tmp/pfs0.hdr \
+            "::/roms/Cave Story+ [0100B7D0022EE000][v0][US].nsp"
+          printf 'a = 1\nb = 2\n' > /tmp/prod.keys
+          mcopy -i /tmp/p2.img /tmp/prod.keys "::/keys/prod.keys"
+          P2START=$((2048 + 32 * 1024 * 1024 / 512))
+          python3 - "$P2START" <<'PY'
+          import struct, sys
+          p2 = int(sys.argv[1])
+          pre = bytearray(1024 * 1024)
+          e1 = bytearray(16); e1[4] = 0x0C
+          e1[8:12] = struct.pack('<I', 2048)
+          e1[12:16] = struct.pack('<I', 32 * 1024 * 1024 // 512)
+          e2 = bytearray(16); e2[4] = 0x0C
+          e2[8:12] = struct.pack('<I', p2)
+          e2[12:16] = struct.pack('<I', 32 * 1024 * 1024 // 512)
+          pre[0x1BE:0x1CE] = e1
+          pre[0x1CE:0x1DE] = e2
+          pre[510] = 0x55; pre[511] = 0xAA
+          open('/tmp/multi.img', 'wb').write(pre)
+          PY
+          cat /tmp/p1.img /tmp/p2.img >> /tmp/multi.img
+          gcc -std=c99 -Wall -c xenon/source/fat32.c -I xenon/source -o /tmp/fat32.o
+          g++ -std=c++11 -Wall -I xenon/source \
+              eden/tests/test_fat_mount.cpp /tmp/fat32.o -o /tmp/test_fat_mount
+          /tmp/test_fat_mount /tmp/multi.img roms "Cave Story+ [0100B7D0022EE000][v0][US].nsp"
+          /tmp/test_fat_mount /tmp/multi.img keys "prod.keys"
+
       - name: Pull libXenon Docker image
         run: docker pull free60/libxenon:latest
 

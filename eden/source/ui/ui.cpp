@@ -287,8 +287,18 @@ static void DrawHome(GfxContext *g, EdenApp *a) {
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
     snprintf(line, sizeof(line), "Storage: %s", Fs_Status());
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
+    snprintf(line, sizeof(line), "Device:  %s", Fs_DeviceType()[0] ? Fs_DeviceType() : "(none)");
+    Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
     snprintf(line, sizeof(line), "Keys:    %s", Fs_KeysStatus());
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
+    if (Fs_LastDiag()[0]) {
+        snprintf(line, sizeof(line), "Diag:    %s", Fs_LastDiag());
+        Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
+    }
+    if (Fs_RootSummary()[0]) {
+        snprintf(line, sizeof(line), "Root:    %s", Fs_RootSummary());
+        Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
+    }
     snprintf(line, sizeof(line), "Files seen: %d   Supported: %d",
              a->lib.files_seen, Library_SupportedCount(&a->lib));
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
