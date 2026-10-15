@@ -25,9 +25,16 @@ CXXFLAGS = $(CFLAGS)
 
 LDFLAGS  = -g $(MACHDEP) -Wl,--gc-sections -Wl,-Map,$(notdir $@).map
 
-# Diagnostic build: skip the boot-time C++ .eh_frame registration so we can
-# confirm whether the boot crash is in that FDE walk (see eden/source/regskip.cpp).
-# Enabled only when explicitly requested: make -C eden EDEN_SKIP_REGISTER_FRAME=1
+# Skip the C++ `.eh_frame` registration at boot. libXenon's c_register_frame()
+# walks the executable's `.eh_frame` before main(); on some consoles that FDE
+# walk faults with a Program exception (0x700) and the UI never appears. Eden360
+# does not use C++ exceptions, so the registration is unnecessary and is skipped
+# by DEFAULT (see eden/source/regskip.cpp for the no-op wrapper).
+#
+# This patch is intentionally permanent: it is only disabled when explicitly
+# asked for, via EDEN_SKIP_REGISTER_FRAME=0.
+#   make -C eden EDEN_SKIP_REGISTER_FRAME=0   # stock unwinder (do not ship)
+EDEN_SKIP_REGISTER_FRAME ?= 1
 ifeq ($(EDEN_SKIP_REGISTER_FRAME),1)
 CFLAGS   += -DEDEN_SKIP_REGISTER_FRAME
 CXXFLAGS += -DEDEN_SKIP_REGISTER_FRAME
