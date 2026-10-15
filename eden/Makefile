@@ -25,6 +25,15 @@ CXXFLAGS = $(CFLAGS)
 
 LDFLAGS  = -g $(MACHDEP) -Wl,--gc-sections -Wl,-Map,$(notdir $@).map
 
+# Diagnostic build: skip the boot-time C++ .eh_frame registration so we can
+# confirm whether the boot crash is in that FDE walk (see eden/source/regskip.cpp).
+# Enabled only when explicitly requested: make -C eden EDEN_SKIP_REGISTER_FRAME=1
+ifeq ($(EDEN_SKIP_REGISTER_FRAME),1)
+CFLAGS   += -DEDEN_SKIP_REGISTER_FRAME
+CXXFLAGS += -DEDEN_SKIP_REGISTER_FRAME
+LDFLAGS  += -Wl,--wrap=__register_frame
+endif
+
 LIBS     := -lxenon -lm
 LIBDIRS  :=
 
@@ -37,7 +46,7 @@ export VPATH    := $(CURDIR)/source:$(CURDIR)/source/ui:$(CURDIR)/source/input:$
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 
 # eden modules + the reused libXenon layers (gfx, input) and shared FAT32.
-export OFILES   := main.o app.o ui.o nav.o library.o fs.o core.o loader.o gfx.o input.o fat32.o
+export OFILES   := main.o app.o ui.o nav.o library.o fs.o core.o loader.o gfx.o input.o fat32.o regskip.o
 
 export INCLUDE  := -I$(CURDIR)/source -I$(CURDIR)/source/ui -I$(CURDIR)/source/input -I$(CURDIR)/source/game -I$(CURDIR)/source/filesystem -I$(CURDIR)/source/core -I$(CURDIR)/../src -I$(CURDIR)/../xenon/source -I$(CURDIR)/$(BUILD) -I$(LIBXENON_INC)
 export LIBPATHS := -L$(LIBXENON_LIB)

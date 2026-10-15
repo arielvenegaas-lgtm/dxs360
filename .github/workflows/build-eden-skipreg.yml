@@ -1,0 +1,50 @@
+name: build-eden-skipreg (diagnostic: skip boot .eh_frame registration)
+
+# DIAGNOSTIC BUILD ONLY - not a release.
+#
+# Produces the same Eden360 frontend as build-eden, but with the boot-time C++
+# .eh_frame registration bypassed (see eden/source/regskip.cpp and the
+# EDEN_SKIP_REGISTER_FRAME block in eden/Makefile). This tests whether the boot
+# crash (Program exception 0x700 in classify_object_over_fdes) is really in that
+# FDE walk: if the menu appears with this ELF, it is.
+#
+# The ZIP and ELF contain NO games, firmware, prod.keys or copyrighted art.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-eden-skipreg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pull libXenon Docker image
+        run: docker pull free60/libxenon:latest
+
+      - name: Build with libXenon (EDEN_SKIP_REGISTER_FRAME=1)
+        run: |
+          docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
+            bash -lc 'set -e; echo "DEVKITXENON=$DEVKITXENON"; make -C eden EDEN_SKIP_REGISTER_FRAME=1'
+
+      - name: Verify the output is a genuine PPC ELF
+        run: |
+          set -e
+          BIN=eden/switch.elf32
+          test -f "$BIN"
+          file "$BIN" | tee /tmp/file.txt
+          grep -q "ELF 32-bit" /tmp/file.txt
+          grep -qE "PowerPC|PPC" /tmp/file.txt
+          echo "OK: $(stat -c %s "$BIN") bytes"
+
+      - name: Stage switch.elf
+        run: cp eden/switch.elf32 switch.elf
+
+      - name: Upload diagnostic ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-skipreg
+          path: switch.elf
