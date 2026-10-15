@@ -10,6 +10,9 @@
  */
 #include <ppc/timebase.h>
 #include <xenon_soc/xenon_power.h>
+#include <xenon_smc/xenon_smc.h>
+
+#include <string.h>
 
 #include "gfx.h"
 #include "app.h"
@@ -42,6 +45,7 @@ int main(int argc, char **argv) {
     Gfx_Present(gfx);
 
     float prev = NowSeconds();
+    float reboot_hold = 0.0f; /* seconds Back+Start held */
     for (;;) {
         Input_Poll();
         const PadState *pad = Input_GetPad(0);
@@ -52,7 +56,26 @@ int main(int argc, char **argv) {
         if (dt < 0.0f) dt = 0.0f;
         if (dt > 0.1f) dt = 0.1f;
 
-        App_Update(app, pad, dt);
+        /* Hold Back+Start for ~1 second to soft-reboot. This is the only way
+         * back out of a bare-metal ELF launched from Aurora's file manager
+         * (same behaviour as the Aurora Bricks build). */
+        PadState view;
+        if (pad) view = *pad; else memset(&view, 0, sizeof(view));
+
+        int exit_combo = pad && pad->connected &&
+            (pad->buttons & (PAD_BACK | PAD_START)) == (PAD_BACK | PAD_START);
+        if (exit_combo) {
+            if (reboot_hold == 0.0f) App_ShowMessage(app, "Holding to return to Aurora...");
+            reboot_hold += dt;
+            if (reboot_hold >= 1.0f) xenon_smc_power_reboot();
+            /* Don't let the Start press open the overlay while exiting. */
+            view.buttons = (uint16_t)(view.buttons & ~(PAD_BACK | PAD_START));
+            view.pressed = (uint16_t)(view.pressed & ~(PAD_BACK | PAD_START));
+        } else {
+            reboot_hold = 0.0f;
+        }
+
+        App_Update(app, &view, dt);
         UI_Draw(app);
         Gfx_Present(gfx);
     }

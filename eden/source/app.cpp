@@ -49,11 +49,72 @@ void App_ShowMessage(EdenApp *a, const char *text) {
     a->msg_t = 3.5f;
 }
 
-static int ScanCb(void *ctx, const char *name, uint32_t size, int is_dir) {
-    EdenApp *a = (EdenApp *)ctx;
-    if (is_dir) { a->lib.dirs_seen++; return 1; }
-    Library_AddFile(&a->lib, name, size);
+/* ---- recursive library scan ------------------------------------------ *
+ *
+ * `Fs_ListDir` enumerates one folder at a time, so the walk is driven from a
+ * fixed queue held in BSS (bare-metal stacks are small). Every game folder is
+ * recorded relative to the volume root, which is what `Game.dir` stores, so a
+ * queued path can never be longer than that field can hold.
+ *
+ * Nothing here is hardcoded to a folder name: the scan always starts at the
+ * volume root and walks downwards, so USB:/roms/, USB:/games/ and any deeper
+ * layout are all discovered (fs.h requirement 4).
+ */
+#define SCAN_DIR_MAX  96   /* == sizeof(Game.dir): queued paths always fit  */
+#define SCAN_QMAX     1024 /* directories visited per scan                 */
+
+static char g_scanq[SCAN_QMAX][SCAN_DIR_MAX];
+static int  g_scanq_n;
+static int  g_scanq_head;
+
+typedef struct {
+    EdenApp *a;
+    char     dir[SCAN_DIR_MAX]; /* folder being walked, "" = volume root   */
+} ScanCtx;
+
+/* Queues a child folder for the outer walk; `c->dir` + "/" + `name`. */
+static void ScanQueue(ScanCtx *c, const char *name) {
+    if (g_scanq_n >= SCAN_QMAX) return;
+    char *out = g_scanq[g_scanq_n];
+    int n;
+    if (c->dir[0]) n = snprintf(out, SCAN_DIR_MAX, "%s/%s", c->dir, name);
+    else           n = snprintf(out, SCAN_DIR_MAX, "%s", name);
+    if (n <= 0 || n >= SCAN_DIR_MAX) return; /* too deep: out of Game.dir range */
+    ++g_scanq_n;
+}
+
+static int ScanCb(void *vctx, const char *name, uint32_t size, int is_dir) {
+    ScanCtx *c = (ScanCtx *)vctx;
+    if (c->a->lib.count >= GAME_MAX) return 0; /* stop listing: library full */
+    if (is_dir) {
+        c->a->lib.dirs_seen++;
+        ScanQueue(c, name);
+        return 1;
+    }
+    Library_AddFileDir(&c->a->lib, c->dir, name, size);
     return 1;
+}
+
+/* Walks the volume root (and everything below it) into `a->lib`. */
+static void ScanVolume(EdenApp *a) {
+    g_scanq_n = 0;
+    g_scanq_head = 0;
+    g_scanq[g_scanq_n++][0] = 0; /* seed with the volume root */
+
+    while (g_scanq_head < g_scanq_n) {
+        if (a->lib.count >= GAME_MAX) break;
+
+        ScanCtx c;
+        c.a = a;
+        memcpy(c.dir, g_scanq[g_scanq_head], SCAN_DIR_MAX);
+        ++g_scanq_head;
+
+        char path[FS_PATH_MAX];
+        if (c.dir[0]) snprintf(path, sizeof(path), "%s", c.dir);
+        else          path[0] = 0; /* "" = volume root */
+
+        if (Fs_ListDir(path, ScanCb, &c) < 0) continue;
+    }
 }
 
 /* Reads the first bytes of a game's container and fills its metadata (real
@@ -66,7 +127,8 @@ static void LoadGameMeta(EdenApp *a, Game *g) {
     if (!a->fs_ready) return;
 
     char path[256];
-    snprintf(path, sizeof(path), "%s/%s", Fs_RomsDir(), g->file);
+    if (g->dir[0]) snprintf(path, sizeof(path), "%s/%s", g->dir, g->file);
+    else           snprintf(path, sizeof(path), "%s", g->file);
     long n = Fs_ReadFile(path, g_metabuf, (uint32_t)sizeof(g_metabuf));
     if (n <= 0) return;
     Library_ScanContainer(g_metabuf, (uint32_t)n, g);
@@ -83,22 +145,23 @@ void App_Rescan(EdenApp *a) {
     if (!a->fs_ready) a->fs_ready = Fs_EnsureMounted();
 
     if (!a->fs_ready) {
-        SetStr(a->status, (int)sizeof(a->status),
-               "No USB storage mounted - connect a FAT32 stick with a roms/ folder");
+        SetStr(a->status, (int)sizeof(a->status), Fs_Status());
         return;
     }
-    const char *roms = Fs_RomsDir();
-    if (!roms || !roms[0]) {
-        SetStr(a->status, (int)sizeof(a->status),
-               "roms/ folder not found on the USB stick");
-        return;
-    }
-
-    Fs_ListDir(roms, ScanCb, a);
+    /* Walk the whole volume: no particular folder name is required. */
+    ScanVolume(a);
 
     char buf[96];
-    snprintf(buf, sizeof(buf), "Scanned %s - %d game%s detected", roms,
-             a->lib.count, a->lib.count == 1 ? "" : "s");
+    if (a->lib.count > 0) {
+        snprintf(buf, sizeof(buf), "%d game%s detected (%d file%s scanned)",
+                 a->lib.count, a->lib.count == 1 ? "" : "s",
+                 a->lib.files_seen, a->lib.files_seen == 1 ? "" : "s");
+    } else if (a->lib.files_seen > 0) {
+        snprintf(buf, sizeof(buf), "%d file%s but no .nsp/.xci/.nro/.nso",
+                 a->lib.files_seen, a->lib.files_seen == 1 ? "" : "s");
+    } else {
+        snprintf(buf, sizeof(buf), "USB mounted, no files on the stick");
+    }
     SetStr(a->status, (int)sizeof(a->status), buf);
 }
 

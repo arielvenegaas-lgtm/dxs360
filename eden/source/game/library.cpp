@@ -236,7 +236,18 @@ void Library_Clear(Library *l) {
     memset(l, 0, sizeof(*l));
 }
 
+static void CopyStr(char *dst, int dstsz, const char *src) {
+    if (!dst || dstsz <= 0) return;
+    int i = 0;
+    for (; src && src[i] && i < dstsz - 1; ++i) dst[i] = src[i];
+    dst[i] = 0;
+}
+
 int Library_AddFile(Library *l, const char *name, uint32_t size) {
+    return Library_AddFileDir(l, "", name, size);
+}
+
+int Library_AddFileDir(Library *l, const char *dir, const char *name, uint32_t size) {
     if (!l || !name) return 0;
     l->files_seen++;
 
@@ -250,13 +261,9 @@ int Library_AddFile(Library *l, const char *name, uint32_t size) {
     Game *g = &l->items[l->count];
     memset(g, 0, sizeof(*g));
 
-    int fn = 0;
-    for (; name[fn] && fn < (int)sizeof(g->file) - 1; ++fn) g->file[fn] = name[fn];
-    g->file[fn] = 0;
-
-    int en = 0;
-    for (; ext[en] && en < (int)sizeof(g->ext) - 1; ++en) g->ext[en] = ext[en];
-    g->ext[en] = 0;
+    CopyStr(g->file, (int)sizeof(g->file), name);
+    CopyStr(g->dir, (int)sizeof(g->dir), dir ? dir : "");
+    CopyStr(g->ext, (int)sizeof(g->ext), ext);
 
     g->size = size;
     g->supported = 0; /* no emulation core yet: detected, not playable */

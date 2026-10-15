@@ -291,7 +291,16 @@ static void DrawHome(GfxContext *g, EdenApp *a) {
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
     snprintf(line, sizeof(line), "Files seen: %d   Supported: %d",
              a->lib.files_seen, Library_SupportedCount(&a->lib));
-    Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 40 * u;
+    Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
+    {
+        char vol[24];
+        uint64_t vb = Fs_VolumeSize();
+        if (vb) snprintf(vol, sizeof(vol), "%.1f GB", (double)vb / 1073741824.0);
+        else    snprintf(vol, sizeof(vol), "unknown");
+        snprintf(line, sizeof(line), "Devices: %d   Volume: %s   Games: %d",
+                 Fs_DeviceCount(), vol, a->lib.count);
+    }
+    Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
 
     Gfx_DrawText(g, px, ly, 2 * u, COL_WARN, "Frontend only - no game can boot yet.");
 }
@@ -391,7 +400,13 @@ static void DrawDetail(GfxContext *g, EdenApp *a) {
     int ty = bodyY;
     TextS(g, tx, ty, 4 * u, COL_TEXT, gm->title);
     ty += 4 * 7 * u + 6 * u;
-    Gfx_DrawText(g, tx, ty, 2 * u, COL_TEXT_DIM, gm->file);
+    {
+        /* Show where the file actually lives on the stick. */
+        char fpath[200];
+        if (gm->dir[0]) snprintf(fpath, sizeof(fpath), "%s/%s", gm->dir, gm->file);
+        else            snprintf(fpath, sizeof(fpath), "%s", gm->file);
+        Gfx_DrawText(g, tx, ty, 2 * u, COL_TEXT_DIM, fpath);
+    }
     ty += 2 * 7 * u + 20 * u;
 
     char sz[24];

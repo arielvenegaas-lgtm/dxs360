@@ -13,6 +13,7 @@ struct usbbus_s;
 typedef struct usbbus_s usbbus_t;
 void usb_poll(usbbus_t *bus);
 void usb_daemon(usbbus_t *bus);
+void usb_do_poll(void);
 extern int       usb_buscnt;
 extern usbbus_t *usb_buses[];
 
@@ -26,9 +27,11 @@ int USBStorage_Read_Sectors(int device, unsigned int sector,
 #include "fat32.h"
 
 static int  g_dev  = -1;
+static int  g_dev_count = 0;
+static uint64_t g_vol_size = 0;
 static int  g_ready = 0;
 static char g_roms[FS_PATH_MAX];
-static char g_status[64];
+static char g_status[96];
 static int  g_keys = -1;
 static char g_keys_status[64];
 static unsigned char g_keybuf[65536];
@@ -65,6 +68,8 @@ int Fs_EnsureMounted(void) {
 int Fs_Ready(void) { return g_ready; }
 const char *Fs_RomsDir(void) { return g_roms; }
 const char *Fs_Status(void) { return g_status[0] ? g_status : "not mounted"; }
+int Fs_DeviceCount(void) { return g_dev_count; }
+uint64_t Fs_VolumeSize(void) { return g_vol_size; }
 int Fs_KeyCount(void) { return g_keys; }
 const char *Fs_KeysStatus(void) {
     return g_keys_status[0] ? g_keys_status : "prod.keys: not checked";
@@ -141,44 +146,53 @@ static int DirExists(const char *path) {
 
 int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
     SetStatus("initialising USB");
+    g_ready = 0;
+    g_dev = -1;
+    g_dev_count = 0;
+    g_vol_size = 0;
     usb_init();
 
-    /* Probe for a mass-storage device for a few seconds. USBStorage_Init()
-     * resets EHCI ports, which is why the caller runs this before starting the
-     * pad driver. */
     double deadline = Now() + 6.0;
     int found = 0;
     while (Now() < deadline) {
         if (tick && !tick(ctx, "searching for a USB drive")) return 0;
-        PollBuses();
-        USBStorage_Init();
-        for (int d = 0; d < 4; ++d) {
+        /* Use usb_do_poll() (like the working libXenon example) which also runs USBStorage_Init() */
+        usb_do_poll();
+        /* Count devices and check capacity */
+        g_dev_count = 0;
+        for (int d = 0; d < 8; ++d) {
             unsigned int ss = 0;
-            if (USBStorage_Get_Capacity(d, &ss) > 0) {
-                g_dev = d;
-                if (ss != 512u) {
-                    SetStatus("drive is not 512-byte sectors");
-                    g_dev = -1;
-                    return 0;
+            int cap = USBStorage_Get_Capacity(d, &ss);
+            if (cap > 0 && ss == 512u) {
+                ++g_dev_count;
+                if (!found) {
+                    g_dev = d;
+                    g_vol_size = (uint64_t)cap * (uint64_t)512u;
+                    found = 1;
                 }
-                found = 1;
-                break;
             }
         }
         if (found) break;
-        /* small pause without a sleep primitive */
         double t0 = Now();
-        while (Now() - t0 < 0.1) PollBuses();
+        while (Now() - t0 < 0.1) usb_do_poll();
     }
 
-    if (!found) { SetStatus("no USB mass-storage device"); return 0; }
+    if (!found) {
+        if (g_dev_count > 0) {
+            SetStatus("USB device found, not 512-byte sectors");
+        } else {
+            SetStatus("no USB mass-storage device");
+        }
+        return 0;
+    }
 
     if (tick) tick(ctx, "mounting FAT32 volume");
-    if (!Fat32_Mount(ReadSectors, 0)) { SetStatus("not a FAT32 volume"); return 0; }
+    if (!Fat32_Mount(ReadSectors, 0)) {
+        SetStatus("not a FAT32 volume");
+        return 0;
+    }
     g_ready = 1;
 
-    /* Resolve the roms/ directory: the package may be extracted at the volume
-     * root or under an "eden/" folder. */
     static const char *cands[] = {
         "roms", "eden/roms", "Eden/roms", "EDEN/ROMS", "ROMs", "ROMS", "roms/switch"
     };
@@ -192,7 +206,15 @@ int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
         }
     }
 
-    SetStatus(g_roms[0] ? "USB FAT32 ready" : "USB ok, no roms/ folder");
+    char buf[96];
+    if (g_roms[0]) {
+        snprintf(buf, sizeof(buf), "USB FAT32 ready (%d dev%s)", g_dev_count,
+                 g_dev_count == 1 ? "" : "s");
+    } else {
+        snprintf(buf, sizeof(buf), "USB ok (%d dev%s), no roms/ folder", g_dev_count,
+                 g_dev_count == 1 ? "" : "s");
+    }
+    SetStatus(buf);
     ProbeKeys();
     return 1;
 }

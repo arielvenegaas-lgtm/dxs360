@@ -38,6 +38,12 @@ const char *Fs_RomsDir(void);
 /* Short human-readable storage status, e.g. "USB FAT32 ready" or "no USB". */
 const char *Fs_Status(void);
 
+/* Returns the number of detected mass-storage devices (>=0). */
+int Fs_DeviceCount(void);
+
+/* Returns total volume size in bytes, or 0 if unknown. */
+uint64_t Fs_VolumeSize(void);
+
 /* Counts "name = value" entries in a prod.keys file found under keys/ (0 if
  * the file exists but holds no usable entries, -1 if none was found). Purely
  * informational: this frontend build does not use keys. */

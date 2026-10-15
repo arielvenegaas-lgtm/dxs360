@@ -32,6 +32,7 @@ typedef enum {
 
 typedef struct {
     char     file[96];   /* basename, e.g. "Cave Story+ [..].nsp"      */
+    char     dir[96];    /* relative directory under roms (e.g. "games") or "" */
     char     title[96];  /* display title (clean, without scene tags)  */
     char     ext[8];     /* lower-case extension including the dot     */
     uint32_t size;       /* bytes                                      */
@@ -70,6 +71,9 @@ void Library_Clear(Library *l);
 /* Adds `name` (a basename) if it has a known Switch-game extension.
  * Returns 1 if added, 0 if the extension is not recognised. */
 int  Library_AddFile(Library *l, const char *name, uint32_t size);
+
+/* Adds a file with relative directory `dir` under the roms root. */
+int  Library_AddFileDir(Library *l, const char *dir, const char *name, uint32_t size);
 
 /* True for ".nsp", ".xci", ".nro", ".nso" (case-insensitive). */
 int  Library_IsGameExt(const char *ext);
