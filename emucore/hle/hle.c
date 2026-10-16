@@ -34,14 +34,11 @@ int Hle_HandleSvc(void *ctx, A64 *cpu, uint64_t imm) {
 
     ++h->calls;
 
-    /* The Switch kernel ABI is SVC #0 only; anything else is not ours. */
-    if (imm != 0) {
-        ++h->unknown_calls;
-        h->last_unknown = imm;
-        return 0;
-    }
-
-    svc = cpu->x[8];
+    /* Real Horizon binaries issue `svc #N` where N is the syscall number
+     * (e.g. #0x6 QueryMemory). A bare `svc #0` is the older HLE convention
+     * that carries the call number in X8; support both so the same registry
+     * serves native content and the synthetic tests. */
+    svc = (imm != 0) ? imm : cpu->x[8];
     for (i = 0; i < h->count; ++i) {
         if (h->handlers[i].svc == svc) {
             if (h->handlers[i].fn(h->handlers[i].ctx, cpu, svc)) {

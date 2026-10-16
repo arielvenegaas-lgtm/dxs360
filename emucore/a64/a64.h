@@ -51,6 +51,11 @@ typedef struct A64 {
     uint64_t sp;
     uint64_t pc;
 
+    /* Advanced SIMD / FP register file: V0..V31, 128 bits each. v[n][0] holds
+     * the low 64 bits (Dn/Sn), v[n][1] the high 64 bits. Lane 0 is the least
+     * significant element (little-endian element order). */
+    uint64_t v[32][2];
+
     uint32_t nzcv;
     uint32_t fpcr, fpsr;
 

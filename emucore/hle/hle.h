@@ -1,12 +1,14 @@
 /* hle.h: honest AArch64 SVC -> HLE dispatch bridge.
  *
- * The Nintendo Switch kernel ABI is HLE'd: user code issues `svc #0` with the
- * call number in X8 and arguments in X0..X7; the handler runs and leaves the
- * result in X0. This dispatcher implements only that plumbing plus a registry
- * of real handlers. It deliberately has NO built-in "pretend success"
- * services: an unknown call is counted and reported, and the caller decides
- * what to do (the interpreter will halt with A64_HALT_SVC so a missing
- * service can never be mistaken for a working one).
+ * The Nintendo Switch kernel ABI is HLE'd. Native binaries issue `svc #N`
+ * where N is the syscall number (e.g. #0x6 QueryMemory), with arguments in
+ * X0..X7; the handler runs and leaves the result in X0. A bare `svc #0` is
+ * the older convention that carries the call number in X8 and is still
+ * accepted. This dispatcher implements only that plumbing plus a registry of
+ * real handlers. It deliberately has NO built-in "pretend success" services:
+ * an unknown call is counted and reported, and the caller decides what to do
+ * (the interpreter halts with A64_HALT_SVC so a missing service can never be
+ * mistaken for a working one).
  */
 #pragma once
 
@@ -36,8 +38,7 @@ typedef struct HleState {
     uint64_t calls;          /* SVC/HVC instructions seen                       */
     uint64_t handled;        /* dispatched to a registered handler             */
     uint64_t unknown_calls;  /* SVCs with no registered handler                */
-    uint64_t bad_imm;        /* SVCs whose immediate wasn't 0 (not the HLE ABI) */
-    uint64_t last_unknown;   /* last unhandled call number (X8) or past-unknown*/
+    uint64_t last_unknown;   /* last unhandled call number                      */
     uint64_t last_imm;
 } HleState;
 

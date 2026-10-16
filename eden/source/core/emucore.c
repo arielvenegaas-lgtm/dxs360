@@ -7,6 +7,7 @@
 #include "a64/a64.h"
 #include "a64/a64_mem.h"
 #include "hle/hle.h"
+#include "hle/kernel.h"
 #include "loader/pfs0.h"
 #include "loader/nso.h"
 #include "loader/loader.h"
@@ -30,6 +31,7 @@ static uint8_t g_nsp_scratch[EMU_NSP_SCRATCH_SIZE];
 static A64GuestMem g_mem;
 static A64             g_cpu;
 static HleState        g_hle;
+static HleKernel       g_kernel;
 static LoadedImage     g_img;
 static ProdKeys        g_keys;
 static int             g_have_keys;
@@ -66,6 +68,9 @@ int EmuCore_Init(void) {
     if (g_inited) return 1;
     A64GuestMem_Init(&g_mem, g_ram, sizeof(g_ram), 0);
     Hle_Init(&g_hle);
+    HleKernel_Init(&g_kernel);
+    HleKernel_SetSpanEnd(&g_kernel, sizeof(g_ram));
+    HleKernel_Register(&g_hle, &g_kernel);
     A64GuestMem_Attach(&g_mem, &g_cpu);
     A64_SetSvcHandler(&g_cpu, Hle_HandleSvc, &g_hle);
     g_loaded = 0;
@@ -126,6 +131,53 @@ int EmuCore_SetKeys(const void *data, unsigned long len) {
     Keys_Init(&g_keys);
     g_have_keys = (Keys_Parse(&g_keys, data, (size_t)len) == KEYS_OK);
     return g_have_keys;
+}
+
+/* Describe the mapped memory to the kernel-call layer: every module segment
+ * (text/rodata/data/bss) with its protection, plus the process stack. This is
+ * what rtld and the SDK observe through QueryMemory; it mirrors the kernel's
+ * view of the process, not a host-side convenience map. */
+static void BuildKernelRegions(void) {
+    int m;
+    uint32_t page = LAYOUT_PAGE;
+
+    g_kernel.count = 0;
+    HleKernel_SetSpanEnd(&g_kernel, sizeof(g_ram));
+
+    for (m = 0; m < g_layout.count; ++m) {
+        const LayoutModule *lm = &g_layout.mod[m];
+        int s;
+        for (s = 0; s < 4; ++s) {
+            const LayoutSegment *sg = &lm->seg[s];
+            uint32_t type, perm;
+            if (sg->size == 0) continue;
+            switch (s) {
+                case LAYOUT_SEG_TEXT:
+                    type = HLEK_MEM_CODE_STATIC;
+                    perm = HLEK_PERM_R | HLEK_PERM_X;
+                    break;
+                case LAYOUT_SEG_RO:
+                    type = HLEK_MEM_CODE_RO;
+                    perm = HLEK_PERM_R;
+                    break;
+                default: /* data, bss */
+                    type = HLEK_MEM_CODE_MUT;
+                    perm = HLEK_PERM_R | HLEK_PERM_W;
+                    break;
+            }
+            HleKernel_AddRegion(&g_kernel, sg->addr, sg->size, type, perm);
+        }
+    }
+
+    /* The process stack sits above the modules, growing down from the top of
+     * the guest reservation. */
+    {
+        uint64_t base = (g_layout.total_size + page - 1) & ~(uint64_t)(page - 1);
+        uint64_t top  = (uint64_t)sizeof(g_ram);
+        if (top > base)
+            HleKernel_AddRegion(&g_kernel, base, top - base,
+                                HLEK_MEM_STACK, HLEK_PERM_R | HLEK_PERM_W);
+    }
 }
 
 /* Load every NSO module in a decrypted ExeFS PFS0 at its kernel-assigned base,
@@ -229,6 +281,8 @@ static int LoadExefsModules(const uint8_t *exefs, uint64_t exefs_len) {
     g_img.image_base = 0;
     g_img.image_end  = g_layout.total_size;
     g_img.mapped     = 0;
+
+    BuildKernelRegions();
     return 1;
 }
 

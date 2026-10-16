@@ -274,6 +274,11 @@ static int StoreLE(A64 *c, uint64_t addr, uint64_t v, int nbytes) {
 static void Undef(A64 *c, uint64_t pc) { c->halt = A64_HALT_UNDEFINED; c->undefined_pc = pc; }
 static void Unimpl(A64 *c, uint64_t pc) { c->halt = A64_HALT_UNIMPLEMENTED; c->undefined_pc = pc; }
 
+/* Advanced SIMD / FP handlers defined further down. */
+static void DoSimd(A64 *c, uint32_t insn, uint64_t pc);
+static void DoSimdPair(A64 *c, uint32_t insn, uint64_t pc);
+static void DoSimdMem(A64 *c, unsigned size, unsigned L, uint64_t addr, unsigned Rt);
+
 /* ===================== data processing -- immediate ===================== */
 
 static void DoDPI(A64 *c, uint32_t insn, uint64_t pc) {
@@ -697,8 +702,13 @@ static void DoLiteral(A64 *c, uint32_t insn, uint64_t pc) {
     unsigned opc = Field(insn, 31, 30), V = Field(insn, 26, 26);
     uint64_t imm19 = Field(insn, 23, 5);
     unsigned Rt = Field(insn, 4, 0);
-    if (V) { Unimpl(c, pc); return; }
     uint64_t addr = pc + (SignExtend(imm19, 19) << 2);
+    if (V) {
+        /* SIMD&FP literal: opc 0=S(32), 1=D(64), 2=Q(128). */
+        unsigned size = (opc == 2) ? 0 : (opc == 1 ? 3 : 2);
+        DoSimdMem(c, size, 1, addr, Rt);
+        return;
+    }
     if (opc == 3) { return; } /* PRFM, no-op */
     int nbytes = (opc == 1 || opc == 2) ? 8 : 4;
     uint64_t raw = 0;
@@ -713,7 +723,7 @@ static void DoPair(A64 *c, uint32_t insn, uint64_t pc) {
     unsigned index = Field(insn, 24, 23), L = Field(insn, 22, 22);
     int64_t imm7 = SignExtend(Field(insn, 21, 15), 7);
     unsigned Rt2 = Field(insn, 14, 10), Rn = Field(insn, 9, 5), Rt = Field(insn, 4, 0);
-    if (V) { Unimpl(c, pc); return; }
+    if (V) { DoSimdPair(c, insn, pc); return; }
     int scale = (opc == 2) ? 3 : 2;
     int64_t offset = imm7 * (1 << scale);
     uint64_t base = ReadXSp(c, Rn);
@@ -752,13 +762,162 @@ static void DoExclusive(A64 *c, uint32_t insn, uint64_t pc) {
     }
 }
 
+/* ===================== Advanced SIMD and floating point ================ */
+
+/* Element size in bits for a 2-bit "size" field: 0=8b, 1=16b, 2=32b, 3=64b. */
+static unsigned VEBits(unsigned size) { return 8u << size; }
+
+static void VSetElem(A64 *c, unsigned n, unsigned size, unsigned idx, uint64_t val) {
+    unsigned bits = VEBits(size);
+    unsigned off = idx * bits;
+    uint64_t mask = (bits >= 64) ? ~0ull : ((1ull << bits) - 1);
+    c->v[n][off >> 6] = (c->v[n][off >> 6] & ~(mask << (off & 63))) |
+                        ((val & mask) << (off & 63));
+}
+
+/* Number of active elements for an arrangement of `size` lanes at width Q. */
+static unsigned VLanes(unsigned size, unsigned Q) {
+    return (Q ? 128u : 64u) / VEBits(size);
+}
+
+/* Write a scalar result into Vn, zeroing the rest of the register. */
+static void VWriteScalar(A64 *c, unsigned n, unsigned bits, uint64_t val) {
+    uint64_t mask = (bits >= 64) ? ~0ull : ((1ull << bits) - 1);
+    c->v[n][0] = val & mask;
+    c->v[n][1] = 0;
+}
+
+/* ---- SIMD&FP load/store, single register ---- */
+
+static void DoSimdMem(A64 *c, unsigned size, unsigned L, uint64_t addr, unsigned Rt) {
+    /* size (SIMD load/store): 0=128-bit(Q), 1=8-bit(B), 2=32-bit(S), 3=64-bit(D). */
+    static const int nbytes_tab[4] = { 16, 1, 4, 8 };
+    int nbytes = nbytes_tab[size & 3];
+    if (nbytes > 8) {
+        uint64_t lo = c->v[Rt][0], hi = c->v[Rt][1];
+        if (L) {
+            if (!LoadLE(c, addr, &lo, 8)) return;
+            if (!LoadLE(c, addr + 8, &hi, 8)) return;
+            c->v[Rt][0] = lo; c->v[Rt][1] = hi;
+        } else {
+            if (!StoreLE(c, addr, lo, 8)) return;
+            if (!StoreLE(c, addr + 8, hi, 8)) return;
+        }
+    } else {
+        uint64_t v = c->v[Rt][0];
+        if (L) {
+            if (!LoadLE(c, addr, &v, nbytes)) return;
+            VWriteScalar(c, Rt, 8 * nbytes, v);
+        } else {
+            if (!StoreLE(c, addr, v, nbytes)) return;
+        }
+    }
+}
+
+static void DoSimdUnsignedImm(A64 *c, uint32_t insn, uint64_t pc) {
+    unsigned size = Field(insn, 31, 30);
+    unsigned opc  = Field(insn, 23, 22);
+    unsigned Rn = Field(insn, 9, 5), Rt = Field(insn, 4, 0);
+    uint64_t imm12 = Field(insn, 21, 10);
+    static const unsigned scale[4] = { 4, 0, 2, 3 }; /* bytes = 1<<scale */
+    unsigned L = opc & 1; /* bit0: 0 store, 1 load (privilege variants ignored) */
+    uint64_t addr = ReadXSp(c, Rn) + (imm12 << scale[size & 3]);
+    DoSimdMem(c, size, L, addr, Rt);
+    (void)pc;
+}
+
+static void DoSimdRegForm(A64 *c, uint32_t insn, uint64_t pc) {
+    unsigned size = Field(insn, 31, 30);
+    unsigned opc  = Field(insn, 23, 22);
+    unsigned Rn = Field(insn, 9, 5), Rt = Field(insn, 4, 0);
+    int64_t imm9 = SignExtend(Field(insn, 20, 12), 9);
+    unsigned idx = Field(insn, 11, 10);
+    unsigned L = opc & 1;
+    uint64_t base = ReadXSp(c, Rn);
+    if (idx == 2) { Unimpl(c, pc); return; } /* SIMD register-offset: unused here */
+    uint64_t addr;
+    int wb = 0;
+    if (idx == 0) { addr = base + (uint64_t)imm9; }             /* unscaled */
+    else if (idx == 1) { addr = base; wb = 1; }                 /* post-index */
+    else { addr = base + (uint64_t)imm9; wb = 1; }              /* pre-index */
+    DoSimdMem(c, size, L, addr, Rt);
+    if (c->halt != A64_OK) return;
+    if (wb) WriteXSp(c, Rn, base + (uint64_t)imm9);
+}
+
+/* ---- SIMD&FP load/store, register pair ---- */
+
+static void DoSimdPair(A64 *c, uint32_t insn, uint64_t pc) {
+    unsigned opc = Field(insn, 31, 30);
+    unsigned index = Field(insn, 24, 23), L = Field(insn, 22, 22);
+    int64_t imm7 = SignExtend(Field(insn, 21, 15), 7);
+    unsigned Rt2 = Field(insn, 14, 10), Rn = Field(insn, 9, 5), Rt = Field(insn, 4, 0);
+    int nbytes;
+    if (opc == 0)      nbytes = 4;   /* S */
+    else if (opc == 1) nbytes = 8;   /* D */
+    else if (opc == 2) nbytes = 16;  /* Q */
+    else { Undef(c, pc); return; }
+    int64_t offset = imm7 * nbytes;
+    uint64_t base = ReadXSp(c, Rn);
+    uint64_t addr = (index == 1) ? base : (uint64_t)((int64_t)base + offset);
+
+    unsigned regs[2] = { Rt, Rt2 };
+    unsigned k;
+    for (k = 0; k < 2; ++k) {
+        uint64_t a = addr + (uint64_t)k * (uint64_t)nbytes;
+        unsigned r = regs[k];
+        if (L) {
+            uint64_t lo = c->v[r][0], hi = 0;
+            int first = (nbytes > 8) ? 8 : nbytes;
+            if (!LoadLE(c, a, &lo, first)) return;
+            if (nbytes > 8 && !LoadLE(c, a + 8, &hi, 8)) return;
+            c->v[r][0] = lo; c->v[r][1] = (nbytes > 8) ? hi : 0;
+        } else {
+            int first = (nbytes > 8) ? 8 : nbytes;
+            if (!StoreLE(c, a, c->v[r][0], first)) return;
+            if (nbytes > 8 && !StoreLE(c, a + 8, c->v[r][1], 8)) return;
+        }
+    }
+    if (index == 1 || index == 3) WriteXSp(c, Rn, (uint64_t)((int64_t)base + offset));
+}
+
+/* ---- Advanced SIMD data processing ---- */
+
+static void DoSimd(A64 *c, uint32_t insn, uint64_t pc) {
+    unsigned Q = Field(insn, 30, 30);
+
+    /* DUP (general): 0 Q 00111000 imm5 0 0001 1 Rn Rd */
+    if ((insn & 0xBFE0FC00u) == 0x0E000C00u) {
+        unsigned imm5 = Field(insn, 20, 16);
+        unsigned Rn = Field(insn, 9, 5), Rd = Field(insn, 4, 0);
+        unsigned size, idx;
+        if (imm5 & 1) { size = 0; idx = (imm5 >> 1) & 0xF; }         /* 8-bit */
+        else if (imm5 & 2) { size = 1; idx = (imm5 >> 2) & 0x7; }    /* 16-bit */
+        else if (imm5 & 4) { size = 2; idx = (imm5 >> 3) & 0x3; }    /* 32-bit */
+        else if (imm5 & 8) { size = 3; idx = (imm5 >> 4) & 0x1; }    /* 64-bit */
+        else { Undef(c, pc); return; }
+        unsigned bits = VEBits(size);
+        uint64_t src = bits > 32 ? ReadX(c, Rn) : (uint32_t)ReadX(c, Rn);
+        uint64_t val = (bits >= 64) ? src : (src & ((1ull << bits) - 1));
+        unsigned lanes = VLanes(size, Q);
+        for (unsigned i = 0; i < lanes; ++i) VSetElem(c, Rd, size, i, val);
+        if (!Q) c->v[Rd][1] = 0;
+        (void)idx;
+        return;
+    }
+
+    Unimpl(c, pc);
+}
+
 static void DoLoadStore(A64 *c, uint32_t insn, uint64_t pc) {
     uint32_t op = Field(insn, 29, 24);
     if (op == 0x08) { DoExclusive(c, insn, pc); return; }
-    if (op == 0x18 || op == 0x19) { DoLiteral(c, insn, pc); return; }
-    if (op == 0x28 || op == 0x29 || op == 0x2A || op == 0x2B) { DoPair(c, insn, pc); return; }
+    if (op == 0x18 || op == 0x19 || op == 0x1C || op == 0x1D) { DoLiteral(c, insn, pc); return; }
+    if ((op >= 0x28 && op <= 0x2B) || (op >= 0x2C && op <= 0x2F)) { DoPair(c, insn, pc); return; }
     if (op == 0x38) { DoRegForm(c, insn, pc); return; }
     if (op == 0x39) { DoRegUnsignedImm(c, insn, pc); return; }
+    if (op == 0x3C) { DoSimdRegForm(c, insn, pc); return; }
+    if (op == 0x3D) { DoSimdUnsignedImm(c, insn, pc); return; }
     Undef(c, pc);
 }
 
@@ -864,7 +1023,7 @@ static void Decode(A64 *c, uint32_t insn, uint64_t pc) {
         case 0x4: case 0x6: case 0xC: case 0xE: DoLoadStore(c, insn, pc); return;
         case 0x5: case 0xD: DoDPR(c, insn, pc); return;
         case 0xA: case 0xB: DoBranchSys(c, insn, pc); return;
-        case 0x7: case 0xF: Unimpl(c, pc); return; /* scalar FP/SIMD */
+        case 0x7: case 0xF: DoSimd(c, insn, pc); return; /* scalar FP/SIMD */
         default: Undef(c, pc); return;
     }
 }
@@ -879,6 +1038,7 @@ void A64_Init(A64 *c, A64MemFn read, A64MemFn write, void *memctx) {
 void A64_Reset(A64 *c, uint64_t pc, int reset_regs) {
     if (reset_regs) {
         memset(c->x, 0, sizeof(c->x));
+        memset(c->v, 0, sizeof(c->v));
         c->sp = 0;
         c->nzcv = 0;
         c->fpcr = c->fpsr = 0;

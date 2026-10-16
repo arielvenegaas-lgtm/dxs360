@@ -220,11 +220,26 @@ jobs:
               -I eden/source -I eden/source/core \
               eden/tests/test_emucore.c eden/source/core/emucore.c \
               eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
-              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/loader/pfs0.c emucore/loader/nso.c \
               emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/layout.c \
               emucore/loader/nca.c emucore/loader/keys.c emucore/crypto/aes.c \
               -o /tmp/test_emucore
           /tmp/test_emucore
+
+      - name: "Host test (Horizon kernel HLE: QueryMemory + syscalls)"
+        # Drives the kernel-call handlers through the real HLE dispatcher: a
+        # mapped region answers QueryMemory with the correct MemoryInfo (base,
+        # size, type, permission), an unmapped address reports Unmapped with the
+        # intervening span, OutputDebugString captures the guest string,
+        # GetSystemTick is monotonic, SetHeapSize records a heap region, and
+        # ExitProcess/unknown calls stay unhandled so the interpreter halts and
+        # reports the real reason.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/hle \
+              eden/tests/test_kernel.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/hle/kernel.c -o /tmp/test_kernel
+          /tmp/test_kernel
 
       - name: "Host test (synthetic NSO report: entry, icount, halt, SVC, faults)"
         # Loads synthetic NSO images through the real loaders and prints the exact
@@ -279,10 +294,13 @@ jobs:
               -I emucore/crypto -I eden/source -I eden/source/core \
               eden/tests/test_emucore.c eden/source/core/emucore.c \
               eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
-              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/loader/pfs0.c emucore/loader/nso.c \
               emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/layout.c \
               emucore/loader/nca.c emucore/loader/keys.c emucore/crypto/aes.c \
               -o /tmp/test_emucore_ppc && qemu-ppc /tmp/test_emucore_ppc
+          $PPC -I emucore/a64 -I emucore/hle \
+              eden/tests/test_kernel.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/hle/kernel.c -o /tmp/test_kernel_ppc && qemu-ppc /tmp/test_kernel_ppc
           $PPC -I emucore/a64 -I emucore/hle -I emucore/loader \
               eden/tests/nso_report.c emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \

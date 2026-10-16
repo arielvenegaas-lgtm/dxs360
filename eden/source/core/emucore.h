@@ -8,9 +8,11 @@
  * module NSO at its kernel-assigned base in NsoIndex order (rtld first), then
  * enters the process at rtld. Dynamic linking is left entirely to the guest
  * rtld, exactly as on hardware; the host loader never resolves or fakes an
- * import. It does NOT yet emulate Horizon OS services, so rtld stops when it
- * needs an unimplemented SVC/service; the API reports exactly where instead of
- * pretending otherwise.
+ * import. It emulates a small, honest subset of Horizon kernel calls
+ * (QueryMemory, GetSystemTick, OutputDebugString, SetHeapSize, GetProcessId),
+ * so rtld gets past the memory discovery it performs at startup; it still stops
+ * when it needs a call that is not implemented, and the API reports exactly
+ * where instead of pretending otherwise.
  *
  * Pure C (no libXenon headers) so the same code is exercised by the host test,
  * the big-endian PPC test and the bare-metal build.

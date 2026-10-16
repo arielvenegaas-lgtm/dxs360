@@ -57,13 +57,24 @@ int main(void) {
         CHECK(cpu.x[0] == 0, "unknown svc changed nothing");
         CHECK(hle.unknown_calls == 1 && hle.last_unknown == 0x2, "unknown recorded");
 
-        /* Non-HLE immediate: rejected (Switch ABI is svc #0). */
+        /* Native ABI: the immediate itself is the syscall number. `svc #1`
+         * must dispatch to the handler registered for syscall 1, independent
+         * of X8. */
         const uint8_t svc1[4] = { 0x21, 0x00, 0x00, 0xD4 }; /* svc #1 */
         A64GuestMem_Write(&mem, 0x10000000u, (void *)svc1, sizeof(svc1));
         A64_Reset(&cpu, 0x10000000u, 1);
-        cpu.x[8] = 0x1;
-        CHECK(A64_Step(&cpu) == A64_HALT_SVC, "svc #1 not treated as HLE");
-        CHECK(hle.unknown_calls == 2 && hle.last_unknown == 1, "bad imm recorded");
+        cpu.x[8] = 0xdead; /* must be ignored when the immediate is non-zero */
+        CHECK(A64_Step(&cpu) == A64_OK, "svc #1 dispatched as syscall 1");
+        CHECK(g_handler_calls == 2, "handler invoked for svc #1");
+        CHECK(cpu.x[0] == 0x12345678u, "svc #1 result in X0");
+        CHECK(hle.handled == 2 && hle.unknown_calls == 1, "svc #1 counted as handled");
+
+        /* Native ABI: unknown immediate halts and is reported by number. */
+        const uint8_t svc5[4] = { 0xA1, 0x00, 0x00, 0xD4 }; /* svc #5 */
+        A64GuestMem_Write(&mem, 0x10000000u, (void *)svc5, sizeof(svc5));
+        A64_Reset(&cpu, 0x10000000u, 1);
+        CHECK(A64_Step(&cpu) == A64_HALT_SVC, "svc #5 unknown -> halt");
+        CHECK(hle.unknown_calls == 2 && hle.last_unknown == 5, "svc #5 recorded");
     }
 
     /* No handler installed: SVC must halt, not silently continue. */

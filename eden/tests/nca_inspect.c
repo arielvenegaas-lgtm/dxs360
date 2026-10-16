@@ -228,9 +228,9 @@ int main(int argc, char **argv) {
                     printf("  ran: insns=%llu stopped=%d halt=%s\n",
                            (unsigned long long)cpu.icount, stopped,
                            A64_HaltName(cpu.halt));
-                    printf("  SVC: calls=%llu handled=%llu unknown=%llu badimm=%llu last_unknown=%llu\n",
+                    printf("  SVC: calls=%llu handled=%llu unknown=%llu last_unknown=%llu\n",
                            (unsigned long long)hle.calls, (unsigned long long)hle.handled,
-                           (unsigned long long)hle.unknown_calls, (unsigned long long)hle.bad_imm,
+                           (unsigned long long)hle.unknown_calls,
                            (unsigned long long)hle.last_unknown);
                     printf("  PC=%#llx fault_size=%llu fault_write=%d\n",
                            (unsigned long long)cpu.pc, (unsigned long long)cpu.fault_size,
