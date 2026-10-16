@@ -115,6 +115,14 @@ const char *EmuCore_LastImportName(void);
  * Lets the frontend report exactly which module a stop/fault happened in. */
 const char *EmuCore_ModuleAt(uint64_t addr);
 
+/* Syscall number of the last SVC the HLE layer could not handle (0 if none).
+ * Non-zero after a stop reported as "svc (unhandled)": exactly which kernel
+ * call the process needs next. */
+uint64_t EmuCore_LastSvc(void);
+
+/* Human-readable name of that syscall ("" / "?" when unknown). */
+const char *EmuCore_LastSvcName(void);
+
 #ifdef __cplusplus
 }
 #endif

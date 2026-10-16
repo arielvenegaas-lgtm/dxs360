@@ -359,6 +359,17 @@ uint64_t EmuCore_PC(void) {
 uint64_t EmuCore_Entry(void)      { return g_img.entry; }
 uint64_t EmuCore_InstrCount(void) { return g_cpu.icount; }
 
+uint64_t EmuCore_LastSvc(void) { return g_hle.last_unknown; }
+
+const char *EmuCore_LastSvcName(void) {
+    static char line[32];
+    uint64_t svc = g_hle.last_unknown;
+    const char *nm = HleKernel_SvcName(svc);
+    if (nm[0] != '?') return nm;
+    snprintf(line, sizeof(line), "syscall 0x%llx", (unsigned long long)svc);
+    return line;
+}
+
 const char *EmuCore_RelocReport(void) {
     static char line[224];
     if (!g_loaded) return "no module loaded";
