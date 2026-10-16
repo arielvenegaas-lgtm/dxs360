@@ -102,7 +102,11 @@ static uint64_t ShiftVal(uint64_t v, unsigned type, unsigned amount, int regsize
             if (regsize == 32) return (v & 0x80000000u) ? 0xFFFFFFFFu : 0;
             return (v & 0x8000000000000000ull) ? ~0ull : 0;
         }
-        if (regsize == 32) return (uint64_t)(int32_t)((uint32_t)v >> amount | ((v & 0x80000000u) ? (0xFFFFFFFFu << (32 - amount)) : 0));
+        if (regsize == 32) {
+            if (!amount) return (uint64_t)(int32_t)(uint32_t)v;
+            return (uint64_t)(int32_t)(((uint32_t)v >> amount) |
+                   ((v & 0x80000000u) ? (0xFFFFFFFFu << (32 - amount)) : 0));
+        }
         return (uint64_t)((int64_t)v >> amount);
     } else { /* ROR */
         if (regsize == 32) return Ror32((uint32_t)v, amount);

@@ -146,6 +146,13 @@ jobs:
           docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
             bash -lc 'set -e; echo "DEVKITXENON=$DEVKITXENON"; make -C eden EDEN_SKIP_REGISTER_FRAME=1'
 
+      - name: Compile AArch64 interpreter for PPC (portability gate)
+        # Same libXenon toolchain as the frontend build, proving emucore/a64
+        # is host-independent (no host byte order / no x86-only constructs).
+        run: |
+          docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
+            bash -lc 'set -e; make -C eden a64ppc'
+
       - name: Verify the output is a genuine PPC ELF (not a host binary)
         run: |
           set -e

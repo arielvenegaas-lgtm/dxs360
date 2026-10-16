@@ -60,11 +60,17 @@ export LIBPATHS := -L$(LIBXENON_LIB)
 
 export LD       := $(CXX)
 
-.PHONY: $(BUILD) clean
+.PHONY: $(BUILD) clean a64ppc
 
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@make --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+# Portability gate: compile the portable AArch64 interpreter with the same
+# PPC/libXenon toolchain (not linked in here yet). Catches host-only code.
+a64ppc:
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -c $(CURDIR)/../emucore/a64/a64.c -o /tmp/a64_ppc.o
+	@echo "a64 PPC compile OK"
 
 clean:
 	@echo clean ...
