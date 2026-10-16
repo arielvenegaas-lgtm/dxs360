@@ -133,13 +133,35 @@ NcaResult Nca_ExtractExefs(const Nca *nca, int i, const uint8_t *nca_data,
                            const uint8_t *titlekey, uint8_t *out, size_t out_cap,
                            const uint8_t **nso, uint64_t *nso_len);
 
+/* Like Nca_ExtractExefs but `sec_data` points directly at section i's first
+ * byte (already read into memory), rather than at the start of the NCA. Used
+ * by the streaming extractor so it never needs the whole NCA resident. */
+NcaResult Nca_DecryptExefsSection(const Nca *nca, int i, const ProdKeys *keys,
+                                  const uint8_t *titlekey, const uint8_t *sec_data,
+                                  uint8_t *out, size_t out_cap,
+                                  const uint8_t **nso, uint64_t *nso_len);
+
 /* Convenience: from a full NSP image, find the program NCA + ticket, decrypt it
  * and locate the ExeFS "main" NSO. `scratch`/`scratch_cap` hold the decrypted
- * scratch/cap hold the decrypted section; on success *nso and *nso_len point
- * into `scratch`. */
+ * section; on success *nso and *nso_len point into `scratch`. */
 NcaResult Nsp_ExtractMain(const ProdKeys *keys, const uint8_t *nsp, uint64_t nsp_size,
                           uint8_t *scratch, size_t scratch_cap,
                           const uint8_t **nso, uint64_t *nso_len);
+
+/* Random-access byte reader: read `len` bytes at absolute offset `off` into
+ * `buf`. Returns bytes read (>= 0), or -1 on error. */
+typedef long (*NcaReadFn)(void *ctx, uint64_t off, void *buf, size_t len);
+
+/* Streaming variant of Nsp_ExtractMain for containers too large to hold in RAM
+ * (a retail NSP is ~140 MB). Instead of the whole NSP it reads only the pieces
+ * it needs -- the PFS0 header, each candidate NCA header, the matching ticket,
+ * and finally the ExeFS section -- through `rd`. `nsp_size` is the real
+ * container size; `scratch` (>= the ExeFS section size, or >= 64 KB) holds the
+ * decrypted section and the working header read. On success *nso and *nso_len
+ * point into `scratch`. Returns the same codes as Nsp_ExtractMain. */
+NcaResult Nsp_ExtractMainStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
+                                uint64_t nsp_size, uint8_t *scratch, size_t scratch_cap,
+                                const uint8_t **nso, uint64_t *nso_len);
 
 #ifdef __cplusplus
 }

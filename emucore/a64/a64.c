@@ -280,11 +280,12 @@ static void DoDPI(A64 *c, uint32_t insn, uint64_t pc) {
     unsigned op1 = Field(insn, 25, 23);
     if (op1 == 0 || op1 == 1) { /* PC-relative */
         unsigned Rd = Field(insn, 4, 0);
+        unsigned op = Field(insn, 31, 31); /* 0 = ADR, 1 = ADRP */
         uint64_t imm21 = ((uint64_t)Field(insn, 23, 5) << 2) | Field(insn, 30, 29);
-        if (op1 == 0) {
+        if (op == 0) { /* ADR */
             WriteX(c, Rd, pc + SignExtend(imm21, 21));
-        } else {
-            WriteX(c, Rd, (pc & ~0xFFFull) + (SignExtend(imm21, 21) << 12));
+        } else {      /* ADRP */
+            WriteX(c, Rd, (pc & ~0xFFFULL) + (SignExtend(imm21, 21) << 12));
         }
         return;
     }

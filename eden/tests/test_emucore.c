@@ -2,10 +2,13 @@
  *
  * Build (from the repository root):
  *   gcc -std=c99 -Wall -Wextra -O1 \
- *       -I emucore/a64 -I emucore/hle -I emucore/loader -I eden/source -I eden/source/core \
+ *       -I emucore -I emucore/a64 -I emucore/hle -I emucore/loader -I emucore/crypto \
+ *       -I eden/source -I eden/source/core \
  *       eden/tests/test_emucore.c eden/source/core/emucore.c eden/source/a64_test_entry.c \
  *       emucore/a64/a64.c emucore/a64/a64_mem.c emucore/hle/hle.c \
  *       emucore/loader/pfs0.c emucore/loader/nso.c emucore/loader/loader.c \
+ *       emucore/loader/mod0.c emucore/loader/nca.c emucore/loader/keys.c \
+ *       emucore/crypto/aes.c \
  *       -o /tmp/test_emucore && /tmp/test_emucore
  */
 #include <stdio.h>

@@ -109,6 +109,9 @@ typedef struct Fat32Reader Fat32Reader;
 Fat32Reader *Fat32Reader_Open(Fat32 *fs, const char *path, uint32_t *out_size);
 /* Reads up to `len` bytes; returns bytes read (0 at EOF), or -1 on error. */
 long Fat32Reader_Read(Fat32Reader *r, void *buf, uint32_t len);
+/* Repositions to absolute byte offset `off` (walks the FAT chain, not data
+ * sectors). Returns 1 on success, 0 if `off` is past EOF. */
+int  Fat32Reader_Seek(Fat32Reader *r, uint32_t off);
 void Fat32Reader_Close(Fat32Reader *r);
 
 /* --- legacy global API (single default volume) --- */

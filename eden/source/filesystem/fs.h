@@ -33,6 +33,26 @@ long Fs_ListDir(const char *path, FsDirFn fn, void *ctx);
 /* Reads a whole file into `buf` (up to `max`). Returns bytes read, or -1. */
 long Fs_ReadFile(const char *path, void *buf, uint32_t max);
 
+/* ---- streaming range reader (for large containers) ------------------- *
+ *
+ * A retail NSP is ~140 MB, far more than the console can hold in RAM, so a
+ * whole-file read is impossible. These expose the FAT32 streaming reader so a
+ * caller can seek to a byte offset and read only the ranges it needs (e.g. one
+ * NCA section). `vol` is a volume index (see Fs_VolumeCount). */
+
+/* Opens `path` on `vol` for streaming reads. Returns an opaque handle (NULL on
+ * error); *out_size receives the file size in bytes when non-NULL. */
+void *Fs_OpenReader(int vol, const char *path, uint64_t *out_size);
+/* Reads up to `len` bytes sequentially; returns bytes read (0 at EOF) or -1. */
+long  Fs_ReaderRead(void *h, void *buf, uint32_t len);
+/* Seeks to absolute byte offset `off`. Returns 1 on success. */
+int   Fs_ReaderSeek(void *h, uint32_t off);
+void  Fs_ReaderClose(void *h);
+
+/* The raw prod.keys file contents loaded at mount (may be NULL), with its
+ * length written to *out_len. Used by the core to derive NCA keys. */
+const unsigned char *Fs_KeyBuf(uint32_t *out_len);
+
 /* The resolved roms/ directory ("" if none was found). */
 const char *Fs_RomsDir(void);
 

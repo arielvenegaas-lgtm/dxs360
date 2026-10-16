@@ -42,7 +42,7 @@ void Core_Shutdown(void) { /* nothing to tear down */ }
 int Core_IsActive(void) { return EmuCore_Active(); }
 
 int Core_CanBoot(const Game *g) {
-    return g && g->container == CONT_NSO;
+    return g && (g->container == CONT_NSO || g->container == CONT_NSP);
 }
 
 const char *Core_WhyNot(const Game *g) {
@@ -51,12 +51,19 @@ const char *Core_WhyNot(const Game *g) {
     case CONT_NSO:
         return "Standalone module: press A to load and run it on the interpreter.";
     case CONT_NSP:
-        return "NSP container: the file list can be read, but NCAs need prod.keys to decrypt.";
+        return "Retail NSP: needs prod.keys (keys/prod.keys on the volume) to decrypt the program NCA.";
     case CONT_NRO:
         return "NRO homebrew: the interpreter is wired, but only NSO images load today.";
     default:
         return "Unrecognised container: nothing to run.";
     }
+}
+
+/* Adapter that lets the core stream an NSP through the FAT32 range reader. */
+static long NspReadCb(void *ctx, unsigned long long off, void *buf, unsigned long len) {
+    void *h = ctx;
+    if (!Fs_ReaderSeek(h, (uint32_t)off)) return -1;
+    return Fs_ReaderRead(h, buf, (uint32_t)len);
 }
 
 /* Reads a file and runs it through the bridge. Kept small and bounded so a
@@ -99,19 +106,47 @@ int Core_Boot(const Game *g, char *msg, int msg_sz) {
     }
 
     if (g->container == CONT_NSP) {
-        static uint8_t hdr[65536];
-        long n = Fs_ReadFile(path, hdr, (uint32_t)sizeof(hdr));
-        if (n <= 0) { snprintf(msg, msg_sz, "Cannot read %s", g->file); return 0; }
-        const char *reason = 0;
-        int cnt = EmuCore_ProbePfs0(hdr, (unsigned long)n,
-                                    (unsigned long long)g->size, &reason);
-        if (cnt < 0) {
-            snprintf(msg, msg_sz, "NSP parse failed: %s", reason ? reason : "unknown");
+        uint32_t klen = 0;
+        const unsigned char *kb = Fs_KeyBuf(&klen);
+        uint64_t fsz = 0;
+        void *rd;
+        int ok;
+        (void)path;
+
+        if (!kb || klen == 0) {
+            snprintf(msg, msg_sz,
+                     "NSP needs keys: put a prod.keys file in keys/ on the volume");
             return 0;
         }
-        snprintf(msg, msg_sz,
-                 "NSP: %d file(s). NCA decryption requires prod.keys; not booted.", cnt);
-        return 0;
+        if (!EmuCore_SetKeys(kb, klen)) {
+            snprintf(msg, msg_sz, "prod.keys has no usable header_key/titlekek");
+            return 0;
+        }
+
+        /* Stream the container through the FS reader: a retail NSP is far too
+         * large to hold in RAM, so only the NCA headers, ticket and ExeFS
+         * section are ever read. */
+        rd = Fs_OpenReader(0, path, &fsz);
+        if (!rd) { snprintf(msg, msg_sz, "Cannot open %s", g->file); return 0; }
+        ok = EmuCore_LoadNsp(NspReadCb, rd, fsz ? fsz : (uint64_t)g->size);
+        Fs_ReaderClose(rd);
+        if (!ok) {
+            snprintf(msg, msg_sz, "NSP load failed: %s", EmuCore_LastError());
+            return 0;
+        }
+
+        int stopped = EmuCore_RunSlice(2000000u);
+        const char *imp = EmuCore_LastImportName();
+        if (imp)
+            snprintf(msg, msg_sz,
+                     "NSP ran to import %s: entry=0x%08x insns=%u (no render yet)",
+                     imp, (unsigned)EmuCore_Entry(), (unsigned)EmuCore_InstrCount());
+        else
+            snprintf(msg, msg_sz, "NSP ran: entry=0x%08x insns=%u (%s); %s",
+                     (unsigned)EmuCore_Entry(), (unsigned)EmuCore_InstrCount(),
+                     stopped ? EmuCore_HaltName() : "still running",
+                     EmuCore_RelocReport());
+        return 1;
     }
 
     snprintf(msg, msg_sz, "%s", Core_WhyNot(g));
@@ -123,9 +158,9 @@ int Core_Boot(const Game *g, char *msg, int msg_sz) {
 static const CoreCapability kCaps[CAP_COUNT] = {
     { "CPU",      CAPSTATE_BETA,    "AArch64 interpreter (emucore/a64): integer/logic/move/branch/load-store; runs NSO entry code." },
     { "GPU",      CAPSTATE_BETA,    "Xbox 360 Xenos 2D framebuffer output via libXenon; no guest Tegra/Maxwell 3D yet." },
-    { "Memory",   CAPSTATE_BETA,    "8 MB guest RAM provisioned; bounds-checked, faults are reported." },
+    { "Memory",   CAPSTATE_BETA,    "64 MB guest RAM provisioned; bounds-checked, faults are reported." },
     { "Firmware", CAPSTATE_STUB,    "No Horizon OS/services; SVCs dispatch to an honest, mostly-empty HLE registry." },
-    { "Loader",   CAPSTATE_BETA,    "PFS0 + NSO parsed and loaded and executed; NCA decryption needs prod.keys." },
+    { "Loader",   CAPSTATE_BETA,    "PFS0/NSO/NCA + prod.keys; MOD0 relocations applied; boots main NSO to first import." },
     { "Audio",    CAPSTATE_NONE,    "No audio output at all." },
 };
 

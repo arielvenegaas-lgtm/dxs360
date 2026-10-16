@@ -73,6 +73,7 @@ static char     g_status[96];
 static int      g_keys = -1;
 static char     g_keys_status[64];
 static unsigned char g_keybuf[65536];
+static uint32_t g_keybuf_len = 0;
 
 static void SetStatus(const char *s) {
     int i = 0;
@@ -434,6 +435,34 @@ long Fs_ReadFileOn(int vol, const char *path, void *buf, uint32_t max) {
     return Fat32V_ReadFile(g_vols[vol].fs, path, buf, max);
 }
 
+/* --- streaming range reader (large containers) ------------------------- */
+
+void *Fs_OpenReader(int vol, const char *path, uint64_t *out_size) {
+    if (vol < 0 || vol >= g_vol_count || !path) return 0;
+    uint32_t sz = 0;
+    Fat32Reader *r = Fat32Reader_Open(g_vols[vol].fs, path, &sz);
+    if (!r) return 0;
+    if (out_size) *out_size = sz;
+    return r;
+}
+
+long Fs_ReaderRead(void *h, void *buf, uint32_t len) {
+    return h ? Fat32Reader_Read((Fat32Reader *)h, buf, len) : -1;
+}
+
+int Fs_ReaderSeek(void *h, uint32_t off) {
+    return h ? Fat32Reader_Seek((Fat32Reader *)h, off) : 0;
+}
+
+void Fs_ReaderClose(void *h) {
+    if (h) Fat32Reader_Close((Fat32Reader *)h);
+}
+
+const unsigned char *Fs_KeyBuf(uint32_t *out_len) {
+    if (out_len) *out_len = g_keybuf_len;
+    return g_keybuf_len ? g_keybuf : 0;
+}
+
 int Fs_ExistsOn(int vol, const char *path, int *is_dir) {
     if (vol < 0 || vol >= g_vol_count || !path) return 0;
     uint32_t sz = 0;
@@ -631,7 +660,7 @@ static void ProbeKeys(void) {
     for (unsigned i = 0; i < sizeof(cands)/sizeof(cands[0]); ++i) {
         long n = Fs_ReadFileOn(0, cands[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
         if (n > 0) {
-            g_keys = CountKeyEntries(g_keybuf, n);
+            g_keys = CountKeyEntries(g_keybuf, n); g_keybuf_len = (uint32_t)n;
             char buf[80];
             snprintf(buf, sizeof(buf), "prod.keys: %d keys (%s)", g_keys, cands[i]);
             SetKeysStatus(buf);
@@ -663,7 +692,7 @@ static void ProbeKeys(void) {
         if (!root.is_dir[i] && (CiIsProdKeys(root.names[i]) || CiEndsKeys(root.names[i]))) {
             long n = Fs_ReadFileOn(0, root.names[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
             if (n > 0) {
-                g_keys = CountKeyEntries(g_keybuf, n);
+                g_keys = CountKeyEntries(g_keybuf, n); g_keybuf_len = (uint32_t)n;
                 snprintf(diag, sizeof(diag), "found %s (%ld bytes)", root.names[i], n);
                 AppendDiag(diag);
                 goto done;
@@ -680,7 +709,7 @@ static void ProbeKeys(void) {
             snprintf(path, sizeof(path), "%s/%s", root.names[i], file);
             long n = Fs_ReadFileOn(0, path, g_keybuf, (uint32_t)sizeof(g_keybuf));
             if (n > 0) {
-                g_keys = CountKeyEntries(g_keybuf, n);
+                g_keys = CountKeyEntries(g_keybuf, n); g_keybuf_len = (uint32_t)n;
                 snprintf(diag, sizeof(diag), "found %s (%ld bytes)", path, n);
                 AppendDiag(diag);
                 goto done;

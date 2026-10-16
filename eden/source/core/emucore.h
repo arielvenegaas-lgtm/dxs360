@@ -2,10 +2,12 @@
  *
  * This is the first real wiring of the portable AArch64 core into the frontend.
  * It is intentionally honest about what it can do: it provisions guest RAM,
- * brings up the interpreter, the HLE bridge and the PFS0/NSO loaders, runs a
- * deterministic self-test, and can load a standalone NSO and execute a bounded
- * slice of it. It cannot decrypt NCAs, so a retail NSP is parsed (container
- * listing) but not booted - and the API says so instead of pretending.
+ * brings up the interpreter, the HLE bridge and the PFS0/NSO/NCA loaders, runs a
+ * deterministic self-test, loads a standalone NSO, and -- given a prod.keys file
+ * -- streams a retail NSP, decrypts its program NCA + ExeFS, applies the MOD0
+ * dynamic relocations and executes a bounded slice of the module. It does NOT
+ * yet emulate Horizon OS services, so the module stops at its first imported SDK
+ * call; the API reports exactly where instead of pretending otherwise.
  *
  * Pure C (no libXenon headers) so the same code is exercised by the host test,
  * the big-endian PPC test and the bare-metal build.
@@ -29,9 +31,13 @@ extern "C" {
  * so a large low .bss pushes those structures out of reach and USB mass storage
  * stops enumerating (64 MB -> ~78 MB image broke USB outright; 16 MB -> ~31 MB
  * still lost the devices on real hardware). Keeping it out of .bss lets the
- * guest RAM size grow without disturbing the working USB layout. This is ample
- * for the small NSO modules the frontend runs today. */
-#define EMU_GUEST_RAM_SIZE (8u * 1024u * 1024u)
+ * guest RAM size grow without disturbing the working USB layout.
+ *
+ * A retail game's main NSO links to ~0x11bd000 (~17.7 MB: text+ro+data+bss),
+ * so 8 MB was too small to even map it. 64 MB clears that with headroom for
+ * guest heap/stack; it remains far inside the .guestram window (0x83000000 up
+ * to 0x9E000000 in eden/app.lds). */
+#define EMU_GUEST_RAM_SIZE (64u * 1024u * 1024u)
 
 /* Initialise guest RAM, the AArch64 interpreter, the HLE bridge and install the
  * SVC handler. Idempotent. Returns 1 on success. */
@@ -51,10 +57,28 @@ const char *EmuCore_StatusLine(void);
 int EmuCore_SelfTest(void);
 const char *EmuCore_SelfTestReport(void);
 
-/* Load a standalone NSO image (the format inside retail NCAs) from memory and
- * set the PC to its entry point. Returns 1 on success; on failure the reason is
- * available via EmuCore_StatusLine(). */
+/* Load a standalone NSO image (the format inside retail NCAs) from memory,
+ * apply its MOD0 dynamic relocations, and set the PC to its entry point.
+ * Returns 1 on success; on failure the reason is available via
+ * EmuCore_StatusLine(). */
 int EmuCore_LoadNso(const void *data, unsigned long len);
+
+/* Provide the prod.keys text needed by the NCA content layer. Returns 1 if at
+ * least one usable key was parsed. */
+int EmuCore_SetKeys(const void *data, unsigned long len);
+
+/* Random-access reader used to stream a large container. */
+typedef long (*EmuCoreReadFn)(void *ctx, unsigned long long off,
+                              void *buf, unsigned long len);
+
+/* Load and run a retail NSP's program NSO: stream the container through `rd`,
+ * decrypt the program NCA + ExeFS, relocate the extracted main NSO and set the
+ * PC to its entry. Requires EmuCore_SetKeys() first. Returns 1 on success; the
+ * exact failure otherwise via EmuCore_LastError(). */
+int EmuCore_LoadNsp(EmuCoreReadFn rd, void *ctx, unsigned long long nsp_size);
+
+/* Human-readable description of the last load attempt's failure ("" if none). */
+const char *EmuCore_LastError(void);
 
 /* Parse an NSP/PFS0 header region. `hdr` holds the first `hdr_len` bytes and
  * `file_size` is the real container size (used to validate entry ranges without
@@ -72,6 +96,16 @@ const char *EmuCore_HaltName(void);
 uint64_t EmuCore_PC(void);
 uint64_t EmuCore_Entry(void);
 uint64_t EmuCore_InstrCount(void);
+
+/* One-line summary of the last load's MOD0 relocation work (entry, reloc
+ * counts, import count). Never NULL. */
+const char *EmuCore_RelocReport(void);
+
+/* If the last halt was an A64_HALT_HLT landing on a generated import stub,
+ * return that import's symbol name (e.g. "__nnmusl_init_dso"); otherwise NULL.
+ * This names the exact SDK/Horizon call the module reached instead of leaving
+ * an opaque HLT. */
+const char *EmuCore_LastImportName(void);
 
 #ifdef __cplusplus
 }

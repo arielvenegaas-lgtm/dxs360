@@ -1125,6 +1125,7 @@ struct Fat32Reader {
     uint32_t size;
     uint32_t pos;
     uint32_t clus;
+    uint32_t first_clus;
     uint32_t clus_off;
     uint32_t cache_lba;
     int      cache_ok;
@@ -1146,6 +1147,7 @@ Fat32Reader *Fat32Reader_Open(Fat32 *fs, const char *path, uint32_t *out_size) {
     r->size = e.size;
     r->pos = 0;
     r->clus = e.clus;
+    r->first_clus = e.clus;
     r->clus_off = 0;
     r->cache_ok = 0;
     if (out_size) *out_size = e.size;
@@ -1186,6 +1188,32 @@ long Fat32Reader_Read(Fat32Reader *r, void *buf, uint32_t len) {
 }
 
 void Fat32Reader_Close(Fat32Reader *r) { if (r) free(r); }
+
+/* Repositions the reader to absolute byte offset `off`. Walks the FAT chain
+ * (following only cluster links, not data sectors) from the file's first
+ * cluster to the cluster holding `off`. Returns 1 on success, 0 if `off` is
+ * past EOF or the chain is shorter than expected. Needed to read a single NCA
+ * section out of a large NSP without streaming the whole container. */
+int Fat32Reader_Seek(Fat32Reader *r, uint32_t off) {
+    if (!r) return 0;
+    if (off > r->size) return 0;
+    Fat32 *fs = r->fs;
+    uint32_t cbytes = ClusterBytes(fs);
+    /* Re-start from the first cluster and walk forward cluster by cluster. */
+    uint32_t clus = r->first_clus;
+    uint32_t idx = off / cbytes;
+    uint32_t i;
+    for (i = 0; i < idx; ++i) {
+        if (clus < 2u || IsEnd(fs, clus)) return 0;
+        clus = FatNext(fs, clus);
+    }
+    if (idx > 0 && (clus < 2u || IsEnd(fs, clus))) return 0;
+    r->clus = clus;
+    r->clus_off = off % cbytes;
+    r->pos = off;
+    r->cache_ok = 0;
+    return 1;
+}
 
 /* --- legacy global API -------------------------------------------------- */
 static Fat32 *g_default;

@@ -33,6 +33,14 @@ NsoResult Nso_Parse(Nso *n, const void *data, uint64_t size) {
 
     memcpy(n->build_id, d + 0x40, 0x20);
 
+    /* Header +0x1C is the text segment's "align_or_total_size": for a module
+     * image it is the size of the MOD0 module-header block that prefixes .text.
+     * Executable code begins immediately after it, so the entry point is
+     * text_location + module_offset (for retail NSOs this is .text + 0x100).
+     * Using text_location alone would execute the MOD0 pointer prologue. */
+    n->module_offset = RdU32(d + 0x1C);
+    if (n->module_offset > 0x1000) return NSO_ERR_RANGE; /* sanity */
+
     for (unsigned i2 = 0; i2 < 3; ++i2) {
         const uint8_t *s = d + 0x10 + i2 * 0x10;
         NsoSegment *seg = &n->seg[i2];
@@ -50,7 +58,7 @@ NsoResult Nso_Parse(Nso *n, const void *data, uint64_t size) {
     }
 
     n->valid = 1;
-    n->entry = n->seg[0].location;
+    n->entry = (uint64_t)n->seg[0].location + n->module_offset;
     return NSO_OK;
 }
 

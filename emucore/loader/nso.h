@@ -31,7 +31,9 @@ typedef struct Nso {
     uint32_t flags;
     NsoSegment seg[3];        /* text, rodata, data */
     uint8_t  build_id[0x20];
-    uint64_t entry;           /* text segment location (module entry) */
+    uint32_t module_offset;   /* bytes of module header (MOD0) at the start of
+                               * .text; executable code begins after it         */
+    uint64_t entry;           /* text location + module_offset (true entry)     */
 } Nso;
 
 typedef enum {

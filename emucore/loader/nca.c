@@ -249,6 +249,19 @@ NcaResult Nca_ExtractExefs(const Nca *nca, int i, const uint8_t *nca_data,
                            const uint8_t *titlekey, uint8_t *out, size_t out_cap,
                            const uint8_t **nso, uint64_t *nso_len) {
     const NcaSection *s;
+    if (!nca || !nca_data || !out || i < 0 || i >= 4) return NCA_ERR_RANGE;
+    s = &nca->section[i];
+    if (!s->present) return NCA_ERR_NO_SECTION;
+    if (s->offset > nca_size || s->size > nca_size - s->offset) return NCA_ERR_RANGE;
+    return Nca_DecryptExefsSection(nca, i, keys, titlekey,
+                                   nca_data + s->offset, out, out_cap, nso, nso_len);
+}
+
+NcaResult Nca_DecryptExefsSection(const Nca *nca, int i, const ProdKeys *keys,
+                                  const uint8_t *titlekey, const uint8_t *sec_data,
+                                  uint8_t *out, size_t out_cap,
+                                  const uint8_t **nso, uint64_t *nso_len) {
+    const NcaSection *s;
     uint8_t key[32];
     size_t key_len = 0;
     NcaResult r;
@@ -257,16 +270,17 @@ NcaResult Nca_ExtractExefs(const Nca *nca, int i, const uint8_t *nca_data,
     uint64_t nsz;
     const uint8_t *nd;
 
-    if (!nca || !nca_data || !out || i < 0 || i >= 4) return NCA_ERR_RANGE;
+    if (!nca || !sec_data || !out || i < 0 || i >= 4) return NCA_ERR_RANGE;
     s = &nca->section[i];
     if (!s->present) return NCA_ERR_NO_SECTION;
-    if (s->offset > nca_size || s->size > nca_size - s->offset) return NCA_ERR_RANGE;
     if (out_cap < s->size) return NCA_ERR_TOO_SMALL;
 
     r = Nca_SectionKey(nca, i, keys, titlekey, key, &key_len);
     if (r != NCA_OK) return r;
 
-    r = Nca_DecryptSection(nca, i, nca_data + s->offset, out, key_len ? key : NULL, key_len);
+    /* Decrypt the section in place (safe: xts_run/CTR read each input block
+     * before overwriting it). */
+    r = Nca_DecryptSection(nca, i, sec_data, out, key_len ? key : NULL, key_len);
     if (r != NCA_OK) return r;
 
     if (s->pfs0_offset > s->size || s->pfs0_size > s->size - s->pfs0_offset) return NCA_ERR_RANGE;
@@ -355,6 +369,93 @@ NcaResult Nsp_ExtractMain(const ProdKeys *keys, const uint8_t *nsp, uint64_t nsp
             s->fs_type != NCA_FS_PFS0) continue;
         return Nca_ExtractExefs(&nca, (int)i, nca_data, nca_size, keys, tk,
                                 scratch, scratch_cap, nso, nso_len);
+    }
+    return NCA_ERR_NO_SECTION;
+}
+
+NcaResult Nsp_ExtractMainStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
+                                uint64_t nsp_size, uint8_t *scratch, size_t scratch_cap,
+                                const uint8_t **nso, uint64_t *nso_len) {
+    Pfs0 pfs;
+    Nca nca;
+    uint64_t nca_off = 0, nca_size = 0;
+    int found = 0;
+    uint8_t titlekey[16];
+    const uint8_t *tk = NULL;
+    uint8_t hdrbuf[NCA_HEADER_SIZE];
+    uint8_t *pfs_hdr = scratch;
+    const uint64_t PFS_HDR_CAP = 0x10000;
+    uint64_t hdr_got;
+    uint32_t i;
+
+    if (!keys || !rd || !scratch || !nso || !nso_len) return NCA_ERR_RANGE;
+    if (scratch_cap < PFS_HDR_CAP) return NCA_ERR_TOO_SMALL;
+
+    /* 1) Read the NSP PFS0 header (entry table + string table). */
+    {
+        uint64_t want = (nsp_size < PFS_HDR_CAP) ? nsp_size : PFS_HDR_CAP;
+        long n = rd(ctx, 0, pfs_hdr, (size_t)want);
+        if (n < 0 || n < 0x10) return NCA_ERR_RANGE;
+        hdr_got = (uint64_t)n;
+    }
+    if (Pfs0_ParseEx(&pfs, pfs_hdr, hdr_got, nsp_size) != PFS0_OK) return NCA_ERR_RANGE;
+
+    /* 2) Find the program NCA by reading each .nca header only. */
+    for (i = 0; i < pfs.count; ++i) {
+        const char *name = Pfs0_Name(&pfs, i);
+        size_t nl = strlen(name);
+        uint64_t off, sz;
+        Nca cand;
+        NcaResult r;
+        if (nl < 4 || strcmp(name + nl - 4, ".nca") != 0) continue;
+        off = pfs.entries[i].offset;
+        sz = pfs.entries[i].size;
+        if (sz < NCA_HEADER_SIZE) continue;
+        if (rd(ctx, off, hdrbuf, NCA_HEADER_SIZE) != (long)NCA_HEADER_SIZE) continue;
+        r = Nca_Parse(&cand, hdrbuf, sz, keys);
+        if (r == NCA_ERR_NO_HEADER_KEY) return r;
+        if (r != NCA_OK) continue;
+        if (cand.content_type != NCA_CONTENT_PROGRAM) continue;
+        nca = cand;
+        nca_off = off;
+        nca_size = sz;
+        found = 1;
+        break;
+    }
+    if (!found) return NCA_ERR_NO_SECTION;
+
+    /* 3) Find and decrypt the matching ticket (rights-id content). */
+    if (nca.has_rights_id) {
+        for (i = 0; i < pfs.count; ++i) {
+            const char *name = Pfs0_Name(&pfs, i);
+            size_t nl = strlen(name);
+            uint64_t off, sz;
+            uint8_t rid[0x10];
+            if (nl < 4 || strcmp(name + nl - 4, ".tik") != 0) continue;
+            off = pfs.entries[i].offset;
+            sz = pfs.entries[i].size;
+            if (sz > sizeof(hdrbuf)) continue;
+            if (rd(ctx, off, hdrbuf, (size_t)sz) != (long)sz) continue;
+            if (Nca_ParseTicket(hdrbuf, sz, NULL, NULL, rid) != NCA_OK) continue;
+            if (memcmp(rid, nca.rights_id, 0x10) != 0) continue;
+            if (Nca_TitleKey(hdrbuf, sz, keys, titlekey, NULL) != NCA_OK) continue;
+            tk = titlekey;
+            break;
+        }
+        if (!tk) return NCA_ERR_NEED_KEY;
+    }
+
+    /* 4) Read the ExeFS PFS0 section into scratch and decrypt in place. */
+    for (i = 0; i < 4; ++i) {
+        const NcaSection *s = &nca.section[i];
+        if (!s->present || s->partition_type != NCA_PARTITION_PFS0 ||
+            s->fs_type != NCA_FS_PFS0) continue;
+        if (s->offset > nca_size || s->size > nca_size - s->offset) return NCA_ERR_RANGE;
+        if (scratch_cap < s->size) return NCA_ERR_TOO_SMALL;
+        if (rd(ctx, nca_off + s->offset, scratch, (size_t)s->size) != (long)s->size)
+            return NCA_ERR_RANGE;
+        return Nca_DecryptExefsSection(&nca, (int)i, keys, tk,
+                                       scratch, scratch, scratch_cap, nso, nso_len);
     }
     return NCA_ERR_NO_SECTION;
 }
