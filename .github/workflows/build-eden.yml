@@ -169,6 +169,20 @@ jobs:
               eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso
           /tmp/test_pfs0_nso
 
+      - name: "Host test (NCA content layer: crypto KATs + synthetic NSP->NSO)"
+        # Crypto known-answer tests (FIPS-197, SP800-38A CTR, IEEE 1619 XTS),
+        # the prod.keys parser, and an end-to-end synthetic round trip:
+        # NSP -> NCA (AES-XTS header, AES-ECB key area, AES-XTS/AES-CTR section,
+        # optional rights-id ticket) -> ExeFS PFS0 -> "main" NSO. No real keys
+        # or games are used.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/crypto -I emucore/loader \
+              eden/tests/test_nca.c emucore/crypto/aes.c emucore/loader/keys.c \
+              emucore/loader/nca.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              -o /tmp/test_nca
+          /tmp/test_nca
+
       - name: "Host test (emucore bridge: init, self-test, load NSO, run, PFS0)"
         # Exercises the eden/source/core/emucore.c bridge: bring up guest RAM +
         # interpreter + HLE, run the deterministic self-test, load a synthetic
@@ -225,6 +239,10 @@ jobs:
               emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/loader/pfs0.c emucore/loader/nso.c emucore/loader/loader.c \
               eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso_ppc && qemu-ppc /tmp/test_pfs0_nso_ppc
+          $PPC -I emucore/crypto -I emucore/loader \
+              eden/tests/test_nca.c emucore/crypto/aes.c emucore/loader/keys.c \
+              emucore/loader/nca.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              -o /tmp/test_nca_ppc && qemu-ppc /tmp/test_nca_ppc
           $PPC -I emucore -I emucore/a64 -I emucore/hle -I emucore/loader \
               -I eden/source -I eden/source/core \
               eden/tests/test_emucore.c eden/source/core/emucore.c \
