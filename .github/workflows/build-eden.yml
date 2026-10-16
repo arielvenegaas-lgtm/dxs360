@@ -262,9 +262,6 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
             bash -lc 'set -e; make -C eden a64ppc'
-
-             bash -lc 'set -e; make -C eden a64ppc'
-
       - name: Verify the output is a genuine PPC ELF (not a host binary)
         run: |
           set -e
