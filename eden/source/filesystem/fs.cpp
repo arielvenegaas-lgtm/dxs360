@@ -36,11 +36,11 @@ int USBStorage_Read_Sectors(int device, unsigned int sector,
 int USBStorage_Write_Sectors(int device, unsigned int sector,
                              unsigned int numSectors, const void *buffer);
 
-/* ATA (internal HDD). `sec_t` is uint32_t, `lba_t` is unsigned long long. */
+/* ATA (internal HDD): libXenon's public ata.h only exposes xenon_ata_init();
+ * the sector read/write routines (ata_readsectors/ata_writesectors) are file
+ * static and not exported, so the internal HDD is not sector-addressable from
+ * the frontend. HDD volumes are therefore reported but never mounted. */
 int xenon_ata_init(void);
-int xenon_ata_read_sectors(uint32_t start_sector, uint32_t num_sectors, void *buf);
-int xenon_ata_write_sectors(unsigned long long start_sector, int num_sectors,
-                            const void *buf);
 }
 
 #include "fs.h"
@@ -104,7 +104,7 @@ static int VolRead(void *ctx, uint32_t lba, uint32_t count, void *buf) {
     if (!v || !v->used) return 0;
     if (v->is_usb)
         return USBStorage_Read_Sectors(v->dev, (unsigned)lba, (unsigned)count, buf) ? 1 : 0;
-    return xenon_ata_read_sectors(lba, count, buf) ? 1 : 0;
+    return 0; /* HDD: no public sector-read API in libXenon */
 }
 
 static int VolWrite(void *ctx, uint32_t lba, uint32_t count, const void *buf) {
@@ -112,7 +112,7 @@ static int VolWrite(void *ctx, uint32_t lba, uint32_t count, const void *buf) {
     if (!v || !v->used || !v->writable) return 0;
     if (v->is_usb)
         return USBStorage_Write_Sectors(v->dev, (unsigned)lba, (unsigned)count, buf) ? 1 : 0;
-    return xenon_ata_write_sectors((unsigned long long)lba, (int)count, buf) ? 1 : 0;
+    return 0; /* HDD: no public sector-write API in libXenon */
 }
 
 static void PollBuses(void) {
