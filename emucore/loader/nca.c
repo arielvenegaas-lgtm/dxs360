@@ -295,6 +295,25 @@ NcaResult Nca_DecryptExefsSection(const Nca *nca, int i, const ProdKeys *keys,
     return NCA_OK;
 }
 
+NcaResult Nca_DecryptExefsRaw(const Nca *nca, int i, const ProdKeys *keys,
+                              const uint8_t *titlekey, const uint8_t *sec_data,
+                              uint8_t *out, size_t out_cap) {
+    const NcaSection *s;
+    uint8_t key[32];
+    size_t key_len = 0;
+    NcaResult r;
+
+    if (!nca || !sec_data || !out || i < 0 || i >= 4) return NCA_ERR_RANGE;
+    s = &nca->section[i];
+    if (!s->present) return NCA_ERR_NO_SECTION;
+    if (out_cap < s->size) return NCA_ERR_TOO_SMALL;
+
+    r = Nca_SectionKey(nca, i, keys, titlekey, key, &key_len);
+    if (r != NCA_OK) return r;
+
+    return Nca_DecryptSection(nca, i, sec_data, out, key_len ? key : NULL, key_len);
+}
+
 /* Locate the program NCA inside an NSP and its bytes. Returns NCA_OK on
  * success, NCA_ERR_NO_HEADER_KEY if the NCA headers can't be read at all, or
  * NCA_ERR_NO_SECTION otherwise. */
@@ -373,9 +392,9 @@ NcaResult Nsp_ExtractMain(const ProdKeys *keys, const uint8_t *nsp, uint64_t nsp
     return NCA_ERR_NO_SECTION;
 }
 
-NcaResult Nsp_ExtractMainStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
-                                uint64_t nsp_size, uint8_t *scratch, size_t scratch_cap,
-                                const uint8_t **nso, uint64_t *nso_len) {
+NcaResult Nsp_ExtractExefsStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
+                                 uint64_t nsp_size, uint8_t *scratch, size_t scratch_cap,
+                                 const uint8_t **exefs, uint64_t *exefs_len) {
     Pfs0 pfs;
     Nca nca;
     uint64_t nca_off = 0, nca_size = 0;
@@ -388,7 +407,7 @@ NcaResult Nsp_ExtractMainStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
     uint64_t hdr_got;
     uint32_t i;
 
-    if (!keys || !rd || !scratch || !nso || !nso_len) return NCA_ERR_RANGE;
+    if (!keys || !rd || !scratch || !exefs || !exefs_len) return NCA_ERR_RANGE;
     if (scratch_cap < PFS_HDR_CAP) return NCA_ERR_TOO_SMALL;
 
     /* 1) Read the NSP PFS0 header (entry table + string table). */
@@ -445,19 +464,51 @@ NcaResult Nsp_ExtractMainStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
         if (!tk) return NCA_ERR_NEED_KEY;
     }
 
-    /* 4) Read the ExeFS PFS0 section into scratch and decrypt in place. */
+    /* 4) Read the ExeFS PFS0 section into scratch, decrypt in place, and hand
+     *    back the whole PFS0 image (all module NSOs). */
     for (i = 0; i < 4; ++i) {
         const NcaSection *s = &nca.section[i];
+        NcaResult r;
         if (!s->present || s->partition_type != NCA_PARTITION_PFS0 ||
             s->fs_type != NCA_FS_PFS0) continue;
         if (s->offset > nca_size || s->size > nca_size - s->offset) return NCA_ERR_RANGE;
         if (scratch_cap < s->size) return NCA_ERR_TOO_SMALL;
         if (rd(ctx, nca_off + s->offset, scratch, (size_t)s->size) != (long)s->size)
             return NCA_ERR_RANGE;
-        return Nca_DecryptExefsSection(&nca, (int)i, keys, tk,
-                                       scratch, scratch, scratch_cap, nso, nso_len);
+        r = Nca_DecryptExefsRaw(&nca, (int)i, keys, tk, scratch, scratch, scratch_cap);
+        if (r != NCA_OK) return r;
+        if (s->pfs0_offset > s->size || s->pfs0_size > s->size - s->pfs0_offset)
+            return NCA_ERR_RANGE;
+        *exefs = scratch + s->pfs0_offset;
+        *exefs_len = s->pfs0_size;
+        return NCA_OK;
     }
     return NCA_ERR_NO_SECTION;
+}
+
+NcaResult Nsp_ExtractMainStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
+                                uint64_t nsp_size, uint8_t *scratch, size_t scratch_cap,
+                                const uint8_t **nso, uint64_t *nso_len) {
+    const uint8_t *exefs = NULL;
+    uint64_t exefs_len = 0;
+    Pfs0 pfs;
+    int mi;
+    uint64_t nsz;
+    const uint8_t *nd;
+    NcaResult r;
+
+    if (!keys || !rd || !scratch || !nso || !nso_len) return NCA_ERR_RANGE;
+    r = Nsp_ExtractExefsStream(keys, rd, ctx, nsp_size, scratch, scratch_cap,
+                               &exefs, &exefs_len);
+    if (r != NCA_OK) return r;
+    if (Pfs0_Parse(&pfs, exefs, exefs_len) != PFS0_OK) return NCA_ERR_RANGE;
+    mi = Pfs0_Find(&pfs, "main");
+    if (mi < 0) return NCA_ERR_NO_NSO;
+    nd = Pfs0_Data(&pfs, (uint32_t)mi, &nsz);
+    if (!nd) return NCA_ERR_NO_NSO;
+    *nso = nd;
+    *nso_len = nsz;
+    return NCA_OK;
 }
 
 #ifdef __cplusplus

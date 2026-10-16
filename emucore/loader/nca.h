@@ -141,6 +141,14 @@ NcaResult Nca_DecryptExefsSection(const Nca *nca, int i, const ProdKeys *keys,
                                   uint8_t *out, size_t out_cap,
                                   const uint8_t **nso, uint64_t *nso_len);
 
+/* Decrypt PFS0 section i into `out` (>= sec->size bytes) without locating any
+ * particular member. `sec_data` points at the section's first byte. The caller
+ * parses the resulting PFS0 (at sec->pfs0_offset / sec->pfs0_size) to reach the
+ * individual module NSOs. */
+NcaResult Nca_DecryptExefsRaw(const Nca *nca, int i, const ProdKeys *keys,
+                              const uint8_t *titlekey, const uint8_t *sec_data,
+                              uint8_t *out, size_t out_cap);
+
 /* Convenience: from a full NSP image, find the program NCA + ticket, decrypt it
  * and locate the ExeFS "main" NSO. `scratch`/`scratch_cap` hold the decrypted
  * section; on success *nso and *nso_len point into `scratch`. */
@@ -162,6 +170,15 @@ typedef long (*NcaReadFn)(void *ctx, uint64_t off, void *buf, size_t len);
 NcaResult Nsp_ExtractMainStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
                                 uint64_t nsp_size, uint8_t *scratch, size_t scratch_cap,
                                 const uint8_t **nso, uint64_t *nso_len);
+
+/* Streaming variant that returns the WHOLE decrypted ExeFS PFS0 (all module
+ * NSOs, "main.npdm" included) instead of only "main". `scratch` must hold the
+ * ExeFS section; on success *exefs and *exefs_len point at the PFS0 image
+ * inside `scratch` (offset by the section's pfs0_offset). The caller parses it
+ * with Pfs0_Parse and loads every member. */
+NcaResult Nsp_ExtractExefsStream(const ProdKeys *keys, NcaReadFn rd, void *ctx,
+                                 uint64_t nsp_size, uint8_t *scratch, size_t scratch_cap,
+                                 const uint8_t **exefs, uint64_t *exefs_len);
 
 #ifdef __cplusplus
 }

@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
         CHECK(n.seg[2].bss_size == 16, "nso data bss");
 
         A64GuestMem_Init(&mem, gmem, sizeof(gmem), 0x10000000u);
-        CHECK(Nso_LoadIntoGuest(&n, nso, nso_size, &mem, &img) == LOAD_OK, "nso loads");
+        CHECK(Nso_LoadIntoGuest(&n, nso, nso_size, &mem, 0, &img) == LOAD_OK, "nso loads");
         CHECK(img.entry == 0x10000000u, "loaded entry");
         CHECK(img.image_base == 0x10000000u, "image base");
         CHECK(img.image_end == 0x10002018u, "image end includes bss");

@@ -48,8 +48,8 @@ typedef struct Mod0Import {
 typedef struct Mod0Info {
     int      present;        /* 1 if a MOD0 header was found                   */
     uint64_t base;           /* module load base (text location)               */
-    uint64_t module_offset;  /* bytes of header before code (== Nso.entry off) */
-    uint64_t dynamic;        /* ELF .dynamic guest address                     */
+    uint64_t module_offset;  /* MOD0 magic offset from the module base          */
+    uint64_t dynamic;        /* ELF .dynamic guest address (== mod0 + field)    */
 
     /* Relocation / symbol tables (0 if absent). */
     uint64_t rela, relasz, relaent;          /* DT_RELA table               */
@@ -73,8 +73,11 @@ typedef struct Mod0Info {
     uint64_t sym_unresolved;  /* could not be classified (counted, not skipped)*/
 } Mod0Info;
 
-/* Locate the MOD0 header in loaded `text` (scans the module-header block) and
- * parse the ELF .dynamic section. Returns 1 if a usable MOD0 was found. */
+/* Locate the MOD0 header in loaded `text` and parse the ELF .dynamic section.
+ * Discovery follows the verified module-independent rule (the u32 at text+4 is
+ * the offset from the module base to the MOD0 magic); MOD0 field offsets are
+ * then resolved relative to the MOD0 structure address. Returns 1 if a usable
+ * MOD0 was found. */
 int Mod0_Locate(A64GuestMem *mem, uint64_t text_base, Mod0Info *out);
 
 /* Apply relocations into guest memory. `base` is the load bias (0 for a module

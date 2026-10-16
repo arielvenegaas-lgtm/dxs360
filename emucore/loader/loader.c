@@ -15,7 +15,7 @@ const char *Load_ResultName(LoadResult r) {
 }
 
 LoadResult Nso_LoadIntoGuest(const Nso *n, const void *nso_data, uint64_t nso_size,
-                             A64GuestMem *mem, LoadedImage *out) {
+                             A64GuestMem *mem, uint64_t bias, LoadedImage *out) {
     const uint8_t *src = (const uint8_t *)nso_data;
     uint64_t base = 0, end = 0, mapped = 0;
     int have_base = 0;
@@ -27,7 +27,7 @@ LoadResult Nso_LoadIntoGuest(const Nso *n, const void *nso_data, uint64_t nso_si
     for (i = 0; i < 3; ++i) {
         const NsoSegment *s = &n->seg[i];
         uint8_t *host;
-        uint64_t seg_end;
+        uint64_t seg_loc, seg_end;
 
         if (s->size == 0) continue;
 
@@ -38,7 +38,12 @@ LoadResult Nso_LoadIntoGuest(const Nso *n, const void *nso_data, uint64_t nso_si
             if (!s->compressed) return LOAD_ERR_RANGE;
         }
 
-        host = A64GuestMem_Host(mem, s->location, s->size);
+        /* Guest address = module base + the segment's in-module memory offset.
+         * Reject any addition that would wrap. */
+        seg_loc = bias + (uint64_t)s->location;
+        if (seg_loc < bias) return LOAD_ERR_RANGE;
+
+        host = A64GuestMem_Host(mem, seg_loc, s->size);
         if (host == NULL) return LOAD_ERR_MEM;
 
         if (s->compressed) {
@@ -51,7 +56,7 @@ LoadResult Nso_LoadIntoGuest(const Nso *n, const void *nso_data, uint64_t nso_si
             memcpy(host, src + s->offset, s->size);
         }
 
-        seg_end = (uint64_t)s->location + s->size;
+        seg_end = seg_loc + s->size;
         if (s->bss_size) {
             uint8_t *z = A64GuestMem_Host(mem, seg_end, s->bss_size);
             if (z == NULL) return LOAD_ERR_MEM;
@@ -59,13 +64,13 @@ LoadResult Nso_LoadIntoGuest(const Nso *n, const void *nso_data, uint64_t nso_si
             seg_end += s->bss_size;
         }
 
-        if (!have_base) { base = s->location; have_base = 1; }
+        if (!have_base) { base = seg_loc; have_base = 1; }
         if (seg_end > end) end = seg_end;
         mapped += s->size;
     }
 
     if (out) {
-        out->entry = n->entry;
+        out->entry = bias + n->entry;
         out->image_base = base;
         out->image_end = end;
         out->mapped = mapped;

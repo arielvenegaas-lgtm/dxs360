@@ -51,7 +51,7 @@ const char *Core_WhyNot(const Game *g) {
     case CONT_NSO:
         return "Standalone module: press A to load and run it on the interpreter.";
     case CONT_NSP:
-        return "Retail NSP: needs prod.keys (keys/prod.keys on the volume) to decrypt the program NCA.";
+        return "Retail NSP: needs prod.keys (keys/prod.keys on the volume); maps all ExeFS modules and enters rtld (dynamic linking runs in guest).";
     case CONT_NRO:
         return "NRO homebrew: the interpreter is wired, but only NSO images load today.";
     default:
@@ -136,16 +136,20 @@ int Core_Boot(const Game *g, char *msg, int msg_sz) {
         }
 
         int stopped = EmuCore_RunSlice(2000000u);
-        const char *imp = EmuCore_LastImportName();
-        if (imp)
-            snprintf(msg, msg_sz,
-                     "NSP ran to import %s: entry=0x%08x insns=%u (no render yet)",
-                     imp, (unsigned)EmuCore_Entry(), (unsigned)EmuCore_InstrCount());
-        else
-            snprintf(msg, msg_sz, "NSP ran: entry=0x%08x insns=%u (%s); %s",
-                     (unsigned)EmuCore_Entry(), (unsigned)EmuCore_InstrCount(),
-                     stopped ? EmuCore_HaltName() : "still running",
-                     EmuCore_RelocReport());
+        {
+            const char *where = EmuCore_ModuleAt(EmuCore_PC());
+            if (where)
+                snprintf(msg, msg_sz,
+                         "Entered from rtld; stopped in %s @0x%08x: entry=0x%08x insns=%u -> %s",
+                         where, (unsigned)EmuCore_PC(), (unsigned)EmuCore_Entry(),
+                         (unsigned)EmuCore_InstrCount(),
+                         stopped ? EmuCore_HaltName() : "budget reached, still running");
+            else
+                snprintf(msg, msg_sz, "NSP ran: entry=0x%08x insns=%u (%s); %s",
+                         (unsigned)EmuCore_Entry(), (unsigned)EmuCore_InstrCount(),
+                         stopped ? EmuCore_HaltName() : "still running",
+                         EmuCore_RelocReport());
+        }
         return 1;
     }
 
@@ -160,7 +164,7 @@ static const CoreCapability kCaps[CAP_COUNT] = {
     { "GPU",      CAPSTATE_BETA,    "Xbox 360 Xenos 2D framebuffer output via libXenon; no guest Tegra/Maxwell 3D yet." },
     { "Memory",   CAPSTATE_BETA,    "64 MB guest RAM provisioned; bounds-checked, faults are reported." },
     { "Firmware", CAPSTATE_STUB,    "No Horizon OS/services; SVCs dispatch to an honest, mostly-empty HLE registry." },
-    { "Loader",   CAPSTATE_BETA,    "PFS0/NSO/NCA + prod.keys; MOD0 relocations applied; boots main NSO to first import." },
+    { "Loader",   CAPSTATE_BETA,    "PFS0/NSO/NCA + prod.keys; maps every ExeFS module in NsoIndex order and enters rtld; linking left to guest rtld." },
     { "Audio",    CAPSTATE_NONE,    "No audio output at all." },
 };
 

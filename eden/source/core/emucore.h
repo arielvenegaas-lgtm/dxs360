@@ -4,10 +4,13 @@
  * It is intentionally honest about what it can do: it provisions guest RAM,
  * brings up the interpreter, the HLE bridge and the PFS0/NSO/NCA loaders, runs a
  * deterministic self-test, loads a standalone NSO, and -- given a prod.keys file
- * -- streams a retail NSP, decrypts its program NCA + ExeFS, applies the MOD0
- * dynamic relocations and executes a bounded slice of the module. It does NOT
- * yet emulate Horizon OS services, so the module stops at its first imported SDK
- * call; the API reports exactly where instead of pretending otherwise.
+ * -- streams a retail NSP, decrypts its program NCA + ExeFS, and maps every
+ * module NSO at its kernel-assigned base in NsoIndex order (rtld first), then
+ * enters the process at rtld. Dynamic linking is left entirely to the guest
+ * rtld, exactly as on hardware; the host loader never resolves or fakes an
+ * import. It does NOT yet emulate Horizon OS services, so rtld stops when it
+ * needs an unimplemented SVC/service; the API reports exactly where instead of
+ * pretending otherwise.
  *
  * Pure C (no libXenon headers) so the same code is exercised by the host test,
  * the big-endian PPC test and the bare-metal build.
@@ -101,11 +104,14 @@ uint64_t EmuCore_InstrCount(void);
  * counts, import count). Never NULL. */
 const char *EmuCore_RelocReport(void);
 
-/* If the last halt was an A64_HALT_HLT landing on a generated import stub,
- * return that import's symbol name (e.g. "__nnmusl_init_dso"); otherwise NULL.
- * This names the exact SDK/Horizon call the module reached instead of leaving
- * an opaque HLT. */
+/* Deprecated: the host loader no longer generates import stubs (rtld performs
+ * all dynamic linking at runtime), so this always returns NULL. Kept for ABI
+ * stability with the frontend. */
 const char *EmuCore_LastImportName(void);
+
+/* Name of the loaded module whose [base, base+size) contains `addr`, or NULL.
+ * Lets the frontend report exactly which module a stop/fault happened in. */
+const char *EmuCore_ModuleAt(uint64_t addr);
 
 #ifdef __cplusplus
 }

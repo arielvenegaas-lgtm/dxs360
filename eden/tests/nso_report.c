@@ -71,7 +71,7 @@ int main(void) {
         uint64_t sz = build_nso(nsbuf, prog, 5);
         printf("== synthetic NSO: store / load / unhandled SVC ==\n");
         if (Nso_Parse(&nso, nsbuf, sz) != NSO_OK) { printf("  NSO parse FAILED\n"); ++fails; }
-        else if (Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, &img) != LOAD_OK) { printf("  load FAILED\n"); ++fails; }
+        else if (Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, 0, &img) != LOAD_OK) { printf("  load FAILED\n"); ++fails; }
         else {
             Hle_Init(&hle);
             A64_Reset(&cpu, img.entry, 1);
@@ -106,7 +106,7 @@ int main(void) {
         uint64_t sz = build_nso(nsbuf, prog, 3);
         printf("== synthetic NSO: handled SVC then BRK ==\n");
         if (Nso_Parse(&nso, nsbuf, sz) != NSO_OK) { printf("  NSO parse FAILED\n"); ++fails; }
-        else if (Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, &img) != LOAD_OK) { printf("  load FAILED\n"); ++fails; }
+        else if (Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, 0, &img) != LOAD_OK) { printf("  load FAILED\n"); ++fails; }
         else {
             Hle_Init(&hle);
             Hle_Register(&hle, 0, "test.setx0", svc0, 0);
@@ -131,7 +131,7 @@ int main(void) {
         const uint32_t ld[] = { 0xB9400001u }; /* ldr w1, [x0] */
         const uint32_t st[] = { 0xB9000002u }; /* str w2, [x0] */
         uint64_t sz = build_nso(nsbuf, ld, 1);
-        Nso_Parse(&nso, nsbuf, sz); Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, &img);
+        Nso_Parse(&nso, nsbuf, sz); Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, 0, &img);
         A64_Reset(&cpu, img.entry, 1);
         A64_SetX(&cpu, 0, 0xFFFFFFFFu); /* far outside the guest RAM window */
         A64Halt h = A64_Run(&cpu, 10u);
@@ -141,7 +141,7 @@ int main(void) {
         if (h != A64_HALT_MEMFAULT || cpu.fault_write != 0 || cpu.fault_size != 4) { printf("  unexpected load fault\n"); ++fails; }
 
         sz = build_nso(nsbuf, st, 1);
-        Nso_Parse(&nso, nsbuf, sz); Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, &img);
+        Nso_Parse(&nso, nsbuf, sz); Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, 0, &img);
         A64_Reset(&cpu, img.entry, 1);
         A64_SetX(&cpu, 0, 0xFFFFFFFFu);
         h = A64_Run(&cpu, 10u);

@@ -169,18 +169,30 @@ jobs:
               eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso
           /tmp/test_pfs0_nso
 
-      - name: "Host test (MOD0 relocations + ADRP decode)"
+      - name: "Host test (MOD0 relocations + ADRP decode + MOD0-relative rule)"
         # Synthetic MOD0 module: asserts R_AARCH64_RELATIVE is biased by the
         # load base, R_AARCH64_JUMP_SLOT receives an import stub holding
         # `hlt #idx`, and the stub address is nameable. Also covers the ADRP
         # decoder the relocations depend on (the old ADR path produced the
-        # wrong page). Non-vacuous: the pre-fix decoder fails the ADRP check.
+        # wrong page), MOD0 discovery from the text+4 pointer, and resolution
+        # of MOD0's dynamic field against the MOD0 structure (not the module
+        # base). Non-vacuous: the pre-fix decoder and base rule fail checks.
         run: |
           set -e
           gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/loader \
               eden/tests/test_mod0.c emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/loader/mod0.c -o /tmp/test_mod0
           /tmp/test_mod0
+
+      - name: "Host test (multi-module layout planner)"
+        # NsoIndex ordering (rtld first), page-aligned contiguous bases from the
+        # code address, entry = rtld base, main.npdm exclusion, per-segment
+        # protections, and rejection of overlap/out-of-range/too-many. Pure C.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/loader \
+              eden/tests/test_layout.c emucore/loader/layout.c -o /tmp/test_layout
+          /tmp/test_layout
 
       - name: "Host test (NCA content layer: crypto KATs + synthetic NSP->NSO)"
         # Crypto known-answer tests (FIPS-197, SP800-38A CTR, IEEE 1619 XTS),
@@ -209,8 +221,9 @@ jobs:
               eden/tests/test_emucore.c eden/source/core/emucore.c \
               eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
-              emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/nca.c \
-              emucore/loader/keys.c emucore/crypto/aes.c -o /tmp/test_emucore
+              emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/layout.c \
+              emucore/loader/nca.c emucore/loader/keys.c emucore/crypto/aes.c \
+              -o /tmp/test_emucore
           /tmp/test_emucore
 
       - name: "Host test (synthetic NSO report: entry, icount, halt, SVC, faults)"
@@ -256,6 +269,8 @@ jobs:
           $PPC -I emucore/a64 -I emucore/loader \
               eden/tests/test_mod0.c emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/loader/mod0.c -o /tmp/test_mod0_ppc && qemu-ppc /tmp/test_mod0_ppc
+          $PPC -I emucore/loader \
+              eden/tests/test_layout.c emucore/loader/layout.c -o /tmp/test_layout_ppc && qemu-ppc /tmp/test_layout_ppc
           $PPC -I emucore/crypto -I emucore/loader \
               eden/tests/test_nca.c emucore/crypto/aes.c emucore/loader/keys.c \
               emucore/loader/nca.c emucore/loader/pfs0.c emucore/loader/nso.c \
@@ -265,8 +280,8 @@ jobs:
               eden/tests/test_emucore.c eden/source/core/emucore.c \
               eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
-              emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/nca.c \
-              emucore/loader/keys.c emucore/crypto/aes.c \
+              emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/layout.c \
+              emucore/loader/nca.c emucore/loader/keys.c emucore/crypto/aes.c \
               -o /tmp/test_emucore_ppc && qemu-ppc /tmp/test_emucore_ppc
           $PPC -I emucore/a64 -I emucore/hle -I emucore/loader \
               eden/tests/nso_report.c emucore/a64/a64.c emucore/a64/a64_mem.c \

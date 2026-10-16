@@ -31,9 +31,13 @@ typedef struct Nso {
     uint32_t flags;
     NsoSegment seg[3];        /* text, rodata, data */
     uint8_t  build_id[0x20];
-    uint32_t module_offset;   /* bytes of module header (MOD0) at the start of
-                               * .text; executable code begins after it         */
-    uint64_t entry;           /* text location + module_offset (true entry)     */
+    uint32_t module_name_offset; /* header +0x1C: ModuleNameOffset (== sizeof
+                                  * header, 0x100); NOT an entry point.        */
+    uint64_t entry;           /* module base (text location). A retail NSO has
+                               * no entry field: the process entry is the first
+                               * loaded module's base (rtld, whose first insn is
+                               * `b 0x8`). Kept as text_location for callers that
+                               * only need the module's load base.             */
 } Nso;
 
 typedef enum {
@@ -47,6 +51,12 @@ typedef enum {
 const char *Nso_ResultName(NsoResult r);
 
 NsoResult Nso_Parse(Nso *n, const void *data, uint64_t size);
+
+/* Unaligned mapped size of the module image: the highest of text/rodata end and
+ * (data + bss) end, following the kernel loader's layout rule. The kernel then
+ * page-aligns this when placing consecutive modules. Returns 0 for an invalid
+ * Nso. */
+uint64_t Nso_ImageSize(const Nso *n);
 
 /* Standard LZ4 block decompression. Returns 1 on success and sets *out_size;
  * 0 on malformed input or if the result would not fit in dst_cap. */

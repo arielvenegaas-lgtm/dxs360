@@ -12,6 +12,13 @@
  * a string table. The test asserts the RELATIVE slot is biased by the load base,
  * the JUMP_SLOT slot receives a stub address, the stub contains the `hlt #0`
  * trap, and the import is nameable from its stub address.
+ *
+ * MOD0 address rule (verified against real NSOs): the u32 at text+4 is the
+ * offset from the module base to the MOD0 magic (main/sdk/subsdk = 8, rtld =
+ * 0x441c), and MOD0's own 32-bit field offsets are relative to the MOD0
+ * structure, not the module base. The second fixture below puts MOD0 at a
+ * non-8 offset (like rtld) with a MOD0-relative dynamic field, so the test is
+ * non-vacuous: the old text_base+field rule failed it.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +46,8 @@ static int build_module(uint8_t *img, uint64_t size) {
     memcpy(img + 8, "MOD0", 4);
     w32(img + 0x0C, 0x100);          /* MOD0.dynamic -> .dynamic at 0x100 */
 
-    /* .dynamic at 0x100: leading zero word, then (tag,val) pairs. */
+    /* .dynamic tags start at 0x108 (the word at 0x100 is padding before them;
+     * MOD0.dynamic = 8 + 0x100 points straight at the first tag). */
     w64(img + 0x100, 0);
     w64(img + 0x108, 5);  w64(img + 0x110, 0x400);  /* DT_STRTAB -> 0x400 */
     w64(img + 0x118, 6);  w64(img + 0x120, 0x300);  /* DT_SYMTAB -> 0x300 */
@@ -105,7 +113,8 @@ int main(void) {
         CHECK(Mod0_Locate(&mem, 0, &info) == 1, "MOD0 located");
         CHECK(info.present == 1, "MOD0 marked present");
         CHECK(info.module_offset == 8, "module_offset == 8");
-        CHECK(info.dynamic == 0x100, "dynamic == 0x100");
+        /* MOD0 is at 8; its dynamic field is 0x100, so dynamic = 8 + 0x100. */
+        CHECK(info.dynamic == 0x108, "dynamic is MOD0-relative");
         CHECK(info.rela == 0x500 && info.relasz == 0x18, "DT_RELA parsed");
         CHECK(info.jmprel == 0x518 && info.jmprelsz == 0x18, "DT_JMPREL parsed");
         CHECK(info.symtab == 0x300 && info.strtab == 0x400, "symbol/string tables");
@@ -128,6 +137,31 @@ int main(void) {
               "stub address names import");
         CHECK(Mod0_ImportNameFor(&info, stub_base + 8) == NULL, "unknown stub name");
 
+        free(img);
+    }
+
+    /* ---- MOD0 at a non-8 offset with a MOD0-relative dynamic field ----
+     * Mirrors rtld (MOD0 magic at 0x441c, discovered from text+4) and proves
+     * the dynamic pointer is resolved against MOD0, not the module base. The
+     * old text_base+field rule would read a zero and find no tags. */
+    {
+        uint8_t *img = (uint8_t *)calloc(1, 0x20000);
+        A64GuestMem mem;
+        Mod0Info info;
+        const uint64_t mod0 = 0x40;
+        CHECK(img != NULL, "rtld fixture allocated");
+        w32(img + 4, (uint32_t)mod0);            /* text+4 -> MOD0 offset */
+        memcpy(img + mod0, "MOD0", 4);
+        /* MOD0.dynamic field is relative to MOD0 itself. */
+        w32(img + mod0 + 4, (uint32_t)(0x1000 - mod0));
+        w64(img + 0x1000, 12); w64(img + 0x1008, 0x1234); /* DT_INIT */
+        w64(img + 0x1010, 0);  w64(img + 0x1018, 0);      /* DT_NULL */
+
+        A64GuestMem_Init(&mem, img, 0x20000, 0);
+        CHECK(Mod0_Locate(&mem, 0, &info) == 1, "rtld-style MOD0 located");
+        CHECK(info.module_offset == mod0, "MOD0 found via text+4, not hardcoded");
+        CHECK(info.dynamic == 0x1000, "dynamic resolved against MOD0");
+        CHECK(info.init == 0x1234, "DT_INIT read from MOD0-relative dynamic");
         free(img);
     }
 

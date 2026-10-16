@@ -10,10 +10,10 @@ extern "C" {
 #endif
 
 typedef struct LoadedImage {
-    uint64_t entry;      /* guest entry address */
-    uint64_t image_base; /* lowest mapped address */
-    uint64_t image_end;  /* one past the highest mapped byte */
-    uint64_t mapped;     /* total bytes written into guest memory */
+    uint64_t entry;      /* guest entry address (load base + Nso.entry) */
+    uint64_t image_base; /* lowest mapped address                       */
+    uint64_t image_end;  /* one past the highest mapped byte            */
+    uint64_t mapped;     /* total bytes written into guest memory       */
 } LoadedImage;
 
 typedef enum {
@@ -26,10 +26,14 @@ typedef enum {
 
 const char *Load_ResultName(LoadResult r);
 
-/* Map/decompress all three NSO segments into `mem` (bounds-checked). `nso_data`
- * must point at the raw NSO bytes whose size is `nso_size`. */
+/* Map/decompress all three NSO segments into `mem` (bounds-checked) at
+ * `bias + segment.location` (the kernel places each module at its own base).
+ * `nso_data` must point at the raw NSO bytes whose size is `nso_size`. `out`
+ * reports the module base (entry), the lowest/highest mapped address and the
+ * bytes written. Returns LOAD_OK or a specific failure; nothing partial is
+ * reported as success. */
 LoadResult Nso_LoadIntoGuest(const Nso *n, const void *nso_data, uint64_t nso_size,
-                             A64GuestMem *mem, LoadedImage *out);
+                             A64GuestMem *mem, uint64_t bias, LoadedImage *out);
 
 #ifdef __cplusplus
 }

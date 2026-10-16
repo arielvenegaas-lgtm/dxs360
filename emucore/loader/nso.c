@@ -33,13 +33,12 @@ NsoResult Nso_Parse(Nso *n, const void *data, uint64_t size) {
 
     memcpy(n->build_id, d + 0x40, 0x20);
 
-    /* Header +0x1C is the text segment's "align_or_total_size": for a module
-     * image it is the size of the MOD0 module-header block that prefixes .text.
-     * Executable code begins immediately after it, so the entry point is
-     * text_location + module_offset (for retail NSOs this is .text + 0x100).
-     * Using text_location alone would execute the MOD0 pointer prologue. */
-    n->module_offset = RdU32(d + 0x1C);
-    if (n->module_offset > 0x1000) return NSO_ERR_RANGE; /* sanity */
+    /* Header +0x1C is ModuleNameOffset (the NSO0 spec defines it as
+     * sizeof(header) == 0x100). It is NOT an entry point and MUST NOT be added
+     * to the text location: doing so lands mid-_init. A retail NSO has no entry
+     * field at all -- the process entry is the first loaded module's base
+     * (rtld), whose first instruction is `b 0x8`. */
+    n->module_name_offset = RdU32(d + 0x1C);
 
     for (unsigned i2 = 0; i2 < 3; ++i2) {
         const uint8_t *s = d + 0x10 + i2 * 0x10;
@@ -58,8 +57,22 @@ NsoResult Nso_Parse(Nso *n, const void *data, uint64_t size) {
     }
 
     n->valid = 1;
-    n->entry = (uint64_t)n->seg[0].location + n->module_offset;
+    /* The module's load base is its text location; the interpreter is entered
+     * at the *first* module's base (see the layout planner), not here. */
+    n->entry = (uint64_t)n->seg[0].location;
     return NSO_OK;
+}
+
+uint64_t Nso_ImageSize(const Nso *n) {
+    uint64_t end = 0;
+    unsigned i;
+    if (!n || !n->valid) return 0;
+    for (i = 0; i < 3; ++i) {
+        uint64_t e = (uint64_t)n->seg[i].location + n->seg[i].size;
+        if (i == 2) e += n->seg[i].bss_size; /* bss extends the data segment */
+        if (e > end) end = e;
+    }
+    return end;
 }
 
 int Nso_Lz4Decompress(const uint8_t *src, uint32_t src_size,

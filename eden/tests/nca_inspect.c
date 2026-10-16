@@ -216,7 +216,7 @@ int main(int argc, char **argv) {
             A64GuestMem_Attach(&mem, &cpu);
             A64_SetSvcHandler(&cpu, Hle_HandleSvc, &hle);
             {
-                LoadResult lr = Nso_LoadIntoGuest(&nso_h, nso, nso_len, &mem, &img);
+                LoadResult lr = Nso_LoadIntoGuest(&nso_h, nso, nso_len, &mem, 0, &img);
                 printf("\n== interpreter ==\n  Nso_LoadIntoGuest: %s\n", Load_ResultName(lr));
                 if (lr != LOAD_OK) { free(scratch); return 1; }
                 printf("  entry=%#llx mapped=%llu end=%#llx\n",

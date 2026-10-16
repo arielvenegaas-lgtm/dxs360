@@ -68,9 +68,19 @@ static int Wu32(A64GuestMem *m, uint64_t a, uint32_t v) {
 
 #define STT_FUNC 2
 
-/* Find "MOD0" in the module-header block at the start of .text. */
+/* Find the MOD0 magic in a module's .text. Verified layout: the little-endian
+ * u32 stored at text+4 is the offset from the module base to the MOD0 magic
+ * (main/sdk/subsdk0-4 = 8, rtld = 0x441c). Use that pointer first -- it is the
+ * real, module-independent rule -- and fall back to a bounded scan only if it
+ * does not point at a magic, so no single module's offset is hardcoded. */
 static uint64_t FindMod0(A64GuestMem *mem, uint64_t text_base) {
     uint64_t off;
+    uint32_t hint;
+    if (Ru32(mem, text_base + 4, &hint) && hint != 0 && hint < 0x100000u) {
+        uint32_t magic;
+        if (Ru32(mem, text_base + (uint64_t)hint, &magic) && magic == 0x30444F4DU)
+            return text_base + (uint64_t)hint;
+    }
     for (off = 0; off < 0x1000; off += 4) {
         uint32_t w;
         if (!Ru32(mem, text_base + off, &w)) break;
@@ -87,30 +97,25 @@ int Mod0_Locate(A64GuestMem *mem, uint64_t text_base, Mod0Info *out) {
     mod0 = FindMod0(mem, text_base);
     if (!mod0) return 0;
 
-    /* MOD0 layout: magic, dynamic, bss_start, bss_end, eh_frame_hdr, module_obj
-     * (all 32-bit offsets relative to the module base). */
+    /* MOD0 layout (all 32-bit offsets relative to the MOD0 structure itself,
+     * NOT to the module base): +0 magic, +4 dynamic, +8 bss_start, +0xC bss_end,
+     * +0x10 eh_frame_hdr, +0x14 module_obj. The dynamic offset therefore
+     * resolves against `mod0`, not `text_base`. Verified: rtld mod0=0x441c,
+     * field=0xC94 -> dynamic=0x50B0; main mod0=8, field=0x4ced88 -> 0x4ced90. */
     {
         uint32_t dyn32;
         if (!Ru32(mem, mod0 + 4, &dyn32)) return 0;
         out->module_offset = (uint64_t)(mod0 - text_base);
-        out->dynamic = text_base + dyn32;
+        out->dynamic = mod0 + (uint64_t)dyn32;
     }
     out->present = 1;
 
-    /* Parse the ELF .dynamic section. The MOD0 dynamic pointer addresses a
-     * block that begins with a leading zero word on retail NSOs, so skip any
-     * leading DT_NULL padding before the first real tag. */
+    /* Parse the ELF .dynamic section. The corrected rule points `dynamic` at
+     * the first real tag (the old code used text_base + field, which landed 8
+     * bytes early and made the first tag look like a stray DT_NULL). */
     dyn = out->dynamic;
-    p = dyn;
-    limit = dyn + 0x400;
-    for (;;) {
-        uint64_t tag;
-        if (!Ru64(mem, p, &tag)) return 1; /* MOD0 found; dynamic unreadable */
-        if (tag != DT_NULL) break;
-        p += 8;
-        if (p >= limit) return 1;
-    }
-    for (; p < limit; p += 16) {
+    limit = dyn + 0x1000;
+    for (p = dyn; p < limit; p += 16) {
         uint64_t tag, val;
         if (!Ru64(mem, p, &tag) || !Ru64(mem, p + 8, &val)) break;
         switch (tag) {

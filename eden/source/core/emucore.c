@@ -10,6 +10,7 @@
 #include "loader/pfs0.h"
 #include "loader/nso.h"
 #include "loader/loader.h"
+#include "loader/layout.h"
 #include "loader/mod0.h"
 #include "loader/nca.h"
 #include "loader/keys.h"
@@ -30,13 +31,36 @@ static A64GuestMem g_mem;
 static A64             g_cpu;
 static HleState        g_hle;
 static LoadedImage     g_img;
-static Mod0Info        g_mod0;
 static ProdKeys        g_keys;
 static int             g_have_keys;
-static char            g_last_error[128];
+static char            g_last_error[160];
 static int             g_inited;
 static int             g_loaded;
-static int             g_relocated;
+
+/* Kernel-style placement of the ExeFS modules (rtld first, page-aligned,
+ * contiguous) and a per-module record for honest reporting. */
+static LayoutPlan      g_layout;
+static int             g_module_count;
+static uint64_t        g_entry;
+
+typedef struct EmuModule {
+    char     name[16];
+    int      rank;
+    uint64_t base;
+    uint64_t size;
+    int      has_mod0;
+    uint64_t dynamic;
+    uint64_t init;
+} EmuModule;
+
+static EmuModule       g_mods[LAYOUT_MAX_MODULES];
+
+/* Top of guest RAM: the process stack grows down from here. The kernel gives
+ * the main thread a stack above the mapped modules; the flat guest-RAM model
+ * mirrors that by placing SP at the end of the reservation. */
+static uint64_t GuestStackTop(void) {
+    return (uint64_t)sizeof(g_ram) & ~(uint64_t)0xf;
+}
 
 int EmuCore_Init(void) {
     if (g_inited) return 1;
@@ -58,8 +82,8 @@ const char *EmuCore_BackendName(void) {
 const char *EmuCore_StatusLine(void) {
     static char line[160];
     snprintf(line, sizeof(line),
-             "AArch64 interpreter wired; guest RAM %u MB; "
-             "NCAs need prod.keys (a retail NSP is listed, not booted)",
+             "AArch64 interpreter wired; guest RAM %u MB; maps all ExeFS modules "
+             "and enters rtld (dynamic linking runs in guest)",
              (unsigned)(EMU_GUEST_RAM_SIZE / (1024u * 1024u)));
     return line;
 }
@@ -75,33 +99,23 @@ const char *EmuCore_SelfTestReport(void) {
 int EmuCore_LoadNso(const void *data, unsigned long len) {
     Nso n;
     LoadResult lr;
-    uint64_t stub_base, stub_cap;
 
     if (!g_inited) EmuCore_Init();
     g_loaded = 0;
-    g_relocated = 0;
-    memset(&g_mod0, 0, sizeof(g_mod0));
+    g_module_count = 0;
+    memset(&g_layout, 0, sizeof(g_layout));
     if (Nso_Parse(&n, data, (uint64_t)len) != NSO_OK)
         return 0; /* status reported by caller's reason string */
-    lr = Nso_LoadIntoGuest(&n, data, (uint64_t)len, &g_mem, &g_img);
+    lr = Nso_LoadIntoGuest(&n, data, (uint64_t)len, &g_mem, 0, &g_img);
     if (lr != LOAD_OK) return 0;
 
-    /* Apply the module's own dynamic relocations. A retail NSO stores a MOD0
-     * header in .text that points at the ELF .dynamic section; without applying
-     * those relocations every GOT/function pointer still holds its link-time
-     * value and the first indirect call faults. We do NOT skip this: a failure
-     * to relocate leaves g_relocated == 0 and the caller reports it. */
-    if (Mod0_Locate(&g_mem, g_img.image_base, &g_mod0)) {
-        stub_base = (g_img.image_end + 0xf) & ~(uint64_t)0xf;
-        stub_cap  = sizeof(g_ram) > stub_base ? sizeof(g_ram) - stub_base : 0;
-        g_mod0.stub_base = stub_base;
-        if (stub_base >= sizeof(g_ram) ||
-            !Mod0_Relocate(&g_mem, &g_mod0, g_img.image_base, stub_base, stub_cap))
-            return 0;
-        g_relocated = 1;
-    }
-
-    A64_Reset(&g_cpu, g_img.entry, 1);
+    /* No host-side dynamic linking here. A retail module's imports live in
+     * other modules (rtld/sdk) and are resolved by rtld at runtime, exactly as
+     * on hardware. A standalone module without rtld is therefore not a complete
+     * program; that is reported honestly rather than papered over with stubs. */
+    g_entry = g_img.entry;
+    A64_Reset(&g_cpu, g_entry, 1);
+    g_cpu.sp = GuestStackTop();
     g_loaded = 1;
     return 1;
 }
@@ -114,13 +128,118 @@ int EmuCore_SetKeys(const void *data, unsigned long len) {
     return g_have_keys;
 }
 
+/* Load every NSO module in a decrypted ExeFS PFS0 at its kernel-assigned base,
+ * in NsoIndex order (rtld first). "main.npdm" and non-module members are
+ * skipped. No import is resolved here: rtld performs all dynamic linking.
+ * Returns 1 on success (g_layout/g_mods/g_entry filled), else 0 with
+ * g_last_error set. */
+static int LoadExefsModules(const uint8_t *exefs, uint64_t exefs_len) {
+    Pfs0 pfs;
+    LayoutInput in[LAYOUT_MAX_MODULES];
+    uint32_t i;
+    int n = 0, m;
+
+    if (Pfs0_Parse(&pfs, exefs, exefs_len) != PFS0_OK) {
+        snprintf(g_last_error, sizeof(g_last_error), "ExeFS is not a valid PFS0");
+        return 0;
+    }
+
+    /* Gather the loadable modules with their geometry. */
+    for (i = 0; i < pfs.count && n < LAYOUT_MAX_MODULES; ++i) {
+        const char *nm = Pfs0_Name(&pfs, i);
+        uint64_t sz;
+        const uint8_t *d;
+        Nso tmp;
+        if (Layout_Rank(nm) < 0) continue;          /* e.g. main.npdm */
+        d = Pfs0_Data(&pfs, i, &sz);
+        if (!d) continue;
+        if (Nso_Parse(&tmp, d, sz) != NSO_OK) {
+            snprintf(g_last_error, sizeof(g_last_error), "module %s: bad NSO header", nm);
+            return 0;
+        }
+        in[n].name = nm;
+        in[n].image_size = Nso_ImageSize(&tmp);
+        in[n].seg_loc[0] = tmp.seg[0].location; in[n].seg_size[0] = tmp.seg[0].size;
+        in[n].seg_loc[1] = tmp.seg[1].location; in[n].seg_size[1] = tmp.seg[1].size;
+        in[n].seg_loc[2] = tmp.seg[2].location; in[n].seg_size[2] = tmp.seg[2].size;
+        in[n].bss_size  = tmp.seg[2].bss_size;
+        ++n;
+    }
+    if (n == 0) {
+        snprintf(g_last_error, sizeof(g_last_error), "ExeFS has no loadable modules");
+        return 0;
+    }
+
+    if (!Layout_Plan(in, n, 0, &g_layout)) {
+        snprintf(g_last_error, sizeof(g_last_error),
+                 "module layout invalid (overlap/overflow/bad segment)");
+        return 0;
+    }
+
+    g_module_count = 0;
+    for (m = 0; m < g_layout.count; ++m) {
+        const LayoutModule *lm = &g_layout.mod[m];
+        int idx = Pfs0_Find(&pfs, lm->name);
+        uint64_t sz;
+        const uint8_t *d;
+        Nso nn;
+        LoadedImage img;
+        LoadResult lr;
+        Mod0Info mi;
+
+        if (idx < 0) {
+            snprintf(g_last_error, sizeof(g_last_error), "module %s vanished", lm->name);
+            return 0;
+        }
+        d = Pfs0_Data(&pfs, (uint32_t)idx, &sz);
+        if (!d || Nso_Parse(&nn, d, sz) != NSO_OK) {
+            snprintf(g_last_error, sizeof(g_last_error), "module %s: bad NSO header", lm->name);
+            return 0;
+        }
+        lr = Nso_LoadIntoGuest(&nn, d, sz, &g_mem, lm->base, &img);
+        if (lr != LOAD_OK) {
+            snprintf(g_last_error, sizeof(g_last_error), "module %s: map failed (%s)",
+                     lm->name, Load_ResultName(lr));
+            return 0;
+        }
+
+        /* Parse (do not apply) the MOD0/dynamic metadata so the layout can be
+         * verified against the image and reported. */
+        memset(&mi, 0, sizeof(mi));
+        memset(&g_mods[g_module_count], 0, sizeof(g_mods[g_module_count]));
+        {
+            size_t nl = strlen(lm->name);
+            if (nl >= sizeof(g_mods[g_module_count].name))
+                nl = sizeof(g_mods[g_module_count].name) - 1;
+            memcpy(g_mods[g_module_count].name, lm->name, nl);
+        }
+        g_mods[g_module_count].rank = lm->rank;
+        g_mods[g_module_count].base = lm->base;
+        g_mods[g_module_count].size = lm->size;
+        if (Mod0_Locate(&g_mem, lm->base, &mi)) {
+            g_mods[g_module_count].has_mod0 = 1;
+            g_mods[g_module_count].dynamic = mi.dynamic;
+            g_mods[g_module_count].init = mi.init;
+        }
+        g_module_count++;
+    }
+
+    g_entry = g_layout.entry;   /* == code_address, i.e. the rtld base */
+    g_img.entry      = g_layout.entry;
+    g_img.image_base = 0;
+    g_img.image_end  = g_layout.total_size;
+    g_img.mapped     = 0;
+    return 1;
+}
+
 int EmuCore_LoadNsp(EmuCoreReadFn rd, void *ctx, unsigned long long nsp_size) {
-    const uint8_t *nso = 0;
-    uint64_t nso_len = 0;
+    const uint8_t *exefs = 0;
+    uint64_t exefs_len = 0;
     NcaResult r;
-    int ok;
 
     g_last_error[0] = 0;
+    g_loaded = 0;
+    g_module_count = 0;
     if (!g_inited) EmuCore_Init();
     if (!rd) { snprintf(g_last_error, sizeof(g_last_error), "no reader"); return 0; }
     if (!g_have_keys) {
@@ -129,16 +248,25 @@ int EmuCore_LoadNsp(EmuCoreReadFn rd, void *ctx, unsigned long long nsp_size) {
         return 0;
     }
 
-    r = Nsp_ExtractMainStream(&g_keys, (NcaReadFn)rd, ctx, (uint64_t)nsp_size,
-                              g_nsp_scratch, sizeof(g_nsp_scratch), &nso, &nso_len);
+    /* Stream the container, decrypt the program NCA's ExeFS, and hand back the
+     * whole decrypted ExeFS PFS0 (every module, not just "main"). */
+    r = Nsp_ExtractExefsStream(&g_keys, (NcaReadFn)rd, ctx, (uint64_t)nsp_size,
+                               g_nsp_scratch, sizeof(g_nsp_scratch), &exefs, &exefs_len);
     if (r != NCA_OK) {
         snprintf(g_last_error, sizeof(g_last_error), "NSP extract: %s", Nca_ResultName(r));
         return 0;
     }
-    ok = EmuCore_LoadNso(nso, (unsigned long)nso_len);
-    if (!ok && g_last_error[0] == 0)
-        snprintf(g_last_error, sizeof(g_last_error), "NSO load/relocate failed");
-    return ok;
+    if (!LoadExefsModules(exefs, exefs_len)) return 0;
+
+    /* Enter the process at rtld (the first module's base). The kernel starts the
+     * main thread with X0=0 and a stack above the mapped modules; rtld then
+     * locates, maps and relocates the remaining modules itself. */
+    A64_Reset(&g_cpu, g_entry, 1);
+    g_cpu.sp = GuestStackTop();
+    g_cpu.x[0] = 0;
+    g_cpu.x[1] = 0;
+    g_loaded = 1;
+    return 1;
 }
 
 const char *EmuCore_LastError(void) { return g_last_error; }
@@ -167,30 +295,47 @@ const char *EmuCore_HaltName(void) {
     return A64_HaltName(g_cpu.halt);
 }
 
-uint64_t EmuCore_PC(void)         { return g_cpu.pc; }
+uint64_t EmuCore_PC(void) {
+    /* When the CPU halts on a bad encoding, g_cpu.pc has already been advanced
+     * past the faulting word; report the faulting address instead. */
+    if (g_cpu.halt == A64_HALT_UNIMPLEMENTED || g_cpu.halt == A64_HALT_UNDEFINED)
+        return g_cpu.undefined_pc;
+    return g_cpu.pc;
+}
 uint64_t EmuCore_Entry(void)      { return g_img.entry; }
 uint64_t EmuCore_InstrCount(void) { return g_cpu.icount; }
 
 const char *EmuCore_RelocReport(void) {
     static char line[224];
     if (!g_loaded) return "no module loaded";
+    if (g_module_count > 0) {
+        snprintf(line, sizeof(line),
+                 "modules=%d entry=rtld@%#llx span=%#llx (dynamic linking left to rtld)",
+                 g_module_count,
+                 (unsigned long long)g_layout.entry,
+                 (unsigned long long)g_layout.total_size);
+        return line;
+    }
     snprintf(line, sizeof(line),
-             "entry=%#llx image_end=%#llx relocs=%llu (relative=%llu, jmprel=%llu) "
-             "syms=%llu imports=%d unresolved=%llu",
+             "standalone module entry=%#llx image_end=%#llx (no host-side linking)",
              (unsigned long long)g_img.entry,
-             (unsigned long long)g_img.image_end,
-             (unsigned long long)g_mod0.rel_total,
-             (unsigned long long)g_mod0.rel_relative,
-             (unsigned long long)g_mod0.rel_jmprel,
-             (unsigned long long)g_mod0.sym_total,
-             g_mod0.import_count,
-             (unsigned long long)g_mod0.sym_unresolved);
+             (unsigned long long)g_img.image_end);
     return line;
 }
 
+/* Names the module containing `addr`, or NULL. Replaces the old import-stub
+ * lookup: the host loader no longer creates stubs (rtld links at runtime), so
+ * an HLT/brk is reported by module + offset instead of a fake import name. */
+const char *EmuCore_ModuleAt(uint64_t addr) {
+    int i;
+    for (i = 0; i < g_module_count; ++i) {
+        if (addr >= g_mods[i].base && addr < g_mods[i].base + g_mods[i].size)
+            return g_mods[i].name;
+    }
+    return 0;
+}
+
 const char *EmuCore_LastImportName(void) {
-    if (!g_relocated) return 0;
-    if (g_cpu.halt != A64_HALT_HLT) return 0;
-    /* The HLT stub is 4 bytes and the PC has already advanced past it. */
-    return Mod0_ImportNameFor(&g_mod0, g_cpu.pc - 4);
+    /* No host-side import resolution any more; a stop is reported by module. */
+    return 0;
 }
