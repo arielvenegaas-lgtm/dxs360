@@ -1,3 +1,244 @@
+name: build-eden (Switch frontend ELF + package)
+
+# Builds the Eden360 frontend with libXenon and packages a release ZIP laid out
+# as eden/ (switch.elf + roms/ + keys/ + assets/ + README.txt).
+#
+# The ZIP and the ELF contain NO games, firmware, prod.keys or copyrighted
+# art. Users supply their own files.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-eden:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host unit tests (loader)
+        run: |
+          set -e
+          g++ -std=c++11 -Wall -I eden/source/core \
+              eden/tests/test_loader.cpp eden/source/core/loader.cpp -o /tmp/test_loader
+          /tmp/test_loader
+
+      - name: Host unit tests (image decoder - PNG/BMP)
+        run: |
+          set -e
+          # Fixtures are generated with the Python standard library only
+          # (zlib/struct): no PIL or other third-party dependency in CI.
+          python3 eden/tests/make_img_fixtures.py /tmp/imgfix
+          gcc -std=c99 -Wall -c src/img.c -I src -o /tmp/img.o
+          g++ -std=c++11 -Wall -I src \
+              eden/tests/test_img.cpp /tmp/img.o -o /tmp/test_img
+          /tmp/test_img /tmp/imgfix
+
+      - name: Host unit tests (local cover-art lookup)
+        run: |
+          set -e
+          python3 eden/tests/make_img_fixtures.py /tmp/imgfix
+          gcc -std=c99 -Wall -c src/img.c -I src -o /tmp/img.o
+          g++ -std=c++11 -Wall -I src -I eden/source/game \
+              eden/tests/test_artwork.cpp eden/source/game/artwork.cpp \
+              /tmp/img.o -o /tmp/test_art
+          /tmp/test_art /tmp/imgfix
+
+      - name: Host unit tests (controller edge detection)
+        run: |
+          set -e
+          g++ -std=c++11 -Wall -I eden/tests/stub -I src \
+              eden/tests/test_input.cpp xenon/source/input.cpp -o /tmp/test_input
+          /tmp/test_input
+
+      - name: Host fuzz harness (FAT32 LFN + ROM scan path)
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dosfstools mtools
+          # 64 MB FAT32, 1 sector/cluster so a 255-char name spans the full
+          # 20-entry LFN sequence range (the max LfnAppend13 accepts).
+          dd if=/dev/zero of=/tmp/roms.img bs=1M count=64 status=none
+          mkfs.fat -F 32 -f 2 -s 1 /tmp/roms.img >/dev/null
+          export MTOOLS_SKIP_CHECK=1
+          mmd -i /tmp/roms.img ::roms
+          printf 'PFS0' > /tmp/pfs0.hdr
+          LONG=$(python3 -c "print('VeryLongGameName_'+'X'*234+'.nsp')")
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/${LONG}"
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/Cave Story+ [0100B7D0022EE000][v0][US].nsp"
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/[0100B7D0022EE000]v1EU.nro"
+          mcopy -i /tmp/roms.img /tmp/pfs0.hdr "::/roms/a.nsp"
+          gcc -std=c99 -Wall -g -O1 -fsanitize=address,undefined \
+              -fno-omit-frame-pointer -c xenon/source/fat32.c \
+              -I xenon/source -o /tmp/fat32_san.o
+          g++ -std=c++11 -Wall -g -O1 -fsanitize=address,undefined \
+              -fno-omit-frame-pointer \
+              -I eden/source/game -I eden/source/core -I xenon/source \
+              eden/tests/fuzz_scan.cpp eden/source/game/library.cpp \
+              eden/source/core/loader.cpp /tmp/fat32_san.o -o /tmp/fuzz_scan
+          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+            /tmp/fuzz_scan /tmp/roms.img
+
+      - name: Host test (FAT32 multi-partition selection)
+        run: |
+          set -e
+          export MTOOLS_SKIP_CHECK=1
+          # Two-partition MBR image: a small EMPTY FAT32 partition first, the
+          # real data (roms/keys) on the second partition. Eden used to mount
+          # the first one and then report "no roms" / "prod.keys not found".
+          dd if=/dev/zero of=/tmp/p1.img bs=1M count=32 status=none
+          mkfs.fat -F 32 -f 2 -s 2 /tmp/p1.img >/dev/null
+          dd if=/dev/zero of=/tmp/p2.img bs=1M count=32 status=none
+          mkfs.fat -F 32 -f 2 -s 2 /tmp/p2.img >/dev/null
+          mmd -i /tmp/p2.img ::roms
+          mmd -i /tmp/p2.img ::keys
+          printf 'PFS0' > /tmp/pfs0.hdr
+          mcopy -i /tmp/p2.img /tmp/pfs0.hdr \
+            "::/roms/Cave Story+ [0100B7D0022EE000][v0][US].nsp"
+          printf 'a = 1\nb = 2\n' > /tmp/prod.keys
+          mcopy -i /tmp/p2.img /tmp/prod.keys "::/keys/prod.keys"
+          P2START=$((2048 + 32 * 1024 * 1024 / 512))
+          python3 - "$P2START" <<'PY'
+          import struct, sys
+          p2 = int(sys.argv[1])
+          pre = bytearray(1024 * 1024)
+          e1 = bytearray(16); e1[4] = 0x0C
+          e1[8:12] = struct.pack('<I', 2048)
+          e1[12:16] = struct.pack('<I', 32 * 1024 * 1024 // 512)
+          e2 = bytearray(16); e2[4] = 0x0C
+          e2[8:12] = struct.pack('<I', p2)
+          e2[12:16] = struct.pack('<I', 32 * 1024 * 1024 // 512)
+          pre[0x1BE:0x1CE] = e1
+          pre[0x1CE:0x1DE] = e2
+          pre[510] = 0x55; pre[511] = 0xAA
+          open('/tmp/multi.img', 'wb').write(pre)
+          PY
+          cat /tmp/p1.img /tmp/p2.img >> /tmp/multi.img
+          gcc -std=c99 -Wall -c xenon/source/fat32.c -I xenon/source -o /tmp/fat32.o
+          g++ -std=c++11 -Wall -I xenon/source \
+              eden/tests/test_fat_mount.cpp /tmp/fat32.o -o /tmp/test_fat_mount
+          /tmp/test_fat_mount /tmp/multi.img roms "Cave Story+ [0100B7D0022EE000][v0][US].nsp"
+          /tmp/test_fat_mount /tmp/multi.img keys "prod.keys"
+
+      - name: Host test (FAT32 writer mkdir / LFN / stream / rollback)
+        run: |
+          set -e
+          # mkfs.fat, fsck.fat and mtools are installed by the fuzz step above.
+          gcc -std=c99 -Wall -c xenon/source/fat32.c -I xenon/source -o /tmp/fat32_w.o
+          g++ -std=c++11 -Wall -I xenon/source \
+              eden/tests/test_fat_write.cpp /tmp/fat32_w.o -o /tmp/test_fat_write
+          # Creates its own FAT32 images, writes short + long (LFN) names, a
+          # nested dir and a streamed file, reads them back, and verifies with
+          # fsck.fat + mtools that the result is genuine FAT32.
+          /tmp/test_fat_write /tmp
+
+      - name: Host test (AArch64 interpreter deterministic entry point)
+        # Runs a fixed AArch64 program (known encodings) through emucore/a64 on
+        # the x86_64 runner and checks registers, flags, memory, branches and
+        # final PC. The interpreter is host-independent, so no native AArch64
+        # is needed for this check.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -c emucore/a64/a64.c -o /tmp/a64_host.o
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I eden/source \
+              eden/tests/test_a64_entry.c eden/source/a64_test_entry.c /tmp/a64_host.o \
+              -o /tmp/test_a64_entry
+          /tmp/test_a64_entry
+
+      - name: Host tests (guest memory, SVC/HLE bridge, PFS0/NSO loaders)
+        # Exercises the new emucore modules on the runner: bounds-checked guest
+        # memory + interpreter fault metadata, the honest SVC->HLE dispatcher,
+        # and the portable PFS0/NSO parsers feeding an LZ4-loaded image into
+        # guest memory and executing it. No keys or real content required.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 \
+              emucore/a64/a64.c emucore/a64/a64_mem.c eden/tests/test_a64_mem.c \
+              -o /tmp/test_a64_mem
+          /tmp/test_a64_mem
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/hle \
+              emucore/a64/a64.c emucore/a64/a64_mem.c emucore/hle/hle.c \
+              eden/tests/test_hle_svc.c -o /tmp/test_hle_svc
+          /tmp/test_hle_svc
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/loader \
+              emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/loader/pfs0.c emucore/loader/nso.c emucore/loader/loader.c \
+              eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso
+          /tmp/test_pfs0_nso
+
+      - name: "Host test (emucore bridge: init, self-test, load NSO, run, PFS0)"
+        # Exercises the eden/source/core/emucore.c bridge: bring up guest RAM +
+        # interpreter + HLE, run the deterministic self-test, load a synthetic
+        # NSO and execute a bounded slice, and probe a PFS0 header from a partial
+        # read. Mirrors what the frontend does when a title is launched.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 \
+              -I emucore -I emucore/a64 -I emucore/hle -I emucore/loader \
+              -I eden/source -I eden/source/core \
+              eden/tests/test_emucore.c eden/source/core/emucore.c \
+              eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/loader/loader.c -o /tmp/test_emucore
+          /tmp/test_emucore
+
+      - name: "Host test (synthetic NSO report: entry, icount, halt, SVC, faults)"
+        # Loads synthetic NSO images through the real loaders and prints the exact
+        # entry PC, instruction count, halt reason, SVC dispatch counters and
+        # memory-fault metadata. Tests three programs: store/load + unhandled
+        # SVC, a handled SVC, and out-of-range load/store. Synthetic only.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 \
+              -I emucore/a64 -I emucore/hle -I emucore/loader \
+              eden/tests/nso_report.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/loader/loader.c -o /tmp/nso_report
+          /tmp/nso_report
+
+      - name: Big-endian PowerPC run (qemu-ppc) of the interpreter
+        # Cross-compile the interpreter, guest memory, HLE bridge and
+        # PFS0/NSO loader for 32-bit big-endian PowerPC and execute the tests
+        # under qemu-ppc. The aarch64/x86 hosts are little-endian, so this is
+        # the step that actually catches host byte-order bugs (e.g. instruction
+        # fetch endianness and guest-memory word order).
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-powerpc-linux-gnu libc6-dev-powerpc-cross qemu-user
+          PPC="powerpc-linux-gnu-gcc -std=c99 -Wall -Wextra -O1 -static"
+          $PPC -I emucore/a64 -I eden/source \
+              eden/tests/test_a64_entry.c eden/source/a64_test_entry.c emucore/a64/a64.c \
+              -o /tmp/test_a64_entry_ppc
+          file /tmp/test_a64_entry_ppc
+          qemu-ppc /tmp/test_a64_entry_ppc
+          $PPC -I emucore/a64 \
+              emucore/a64/a64.c emucore/a64/a64_mem.c eden/tests/test_a64_mem.c \
+              -o /tmp/test_a64_mem_ppc && qemu-ppc /tmp/test_a64_mem_ppc
+          $PPC -I emucore/a64 -I emucore/hle \
+              emucore/a64/a64.c emucore/a64/a64_mem.c emucore/hle/hle.c \
+              eden/tests/test_hle_svc.c -o /tmp/test_hle_svc_ppc && qemu-ppc /tmp/test_hle_svc_ppc
+          $PPC -I emucore/a64 -I emucore/loader \
+              emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/loader/pfs0.c emucore/loader/nso.c emucore/loader/loader.c \
+              eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso_ppc && qemu-ppc /tmp/test_pfs0_nso_ppc
+          $PPC -I emucore -I emucore/a64 -I emucore/hle -I emucore/loader \
+              -I eden/source -I eden/source/core \
+              eden/tests/test_emucore.c eden/source/core/emucore.c \
+              eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/loader/loader.c -o /tmp/test_emucore_ppc && qemu-ppc /tmp/test_emucore_ppc
+          $PPC -I emucore/a64 -I emucore/hle -I emucore/loader \
+              eden/tests/nso_report.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/loader/loader.c -o /tmp/nso_report_ppc && qemu-ppc /tmp/nso_report_ppc
+
+      - name: Pull libXenon Docker image
+        run: docker pull free60/libxenon:latest
+
       - name: Build with libXenon
         # EDEN_SKIP_REGISTER_FRAME=1 is the default, but set it explicitly:
         # shipping builds skip the boot-time .eh_frame registration that faults
@@ -5,7 +246,6 @@
         run: |
           docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
             bash -lc 'set -e; echo "DEVKITXENON=$DEVKITXENON"; make -C eden EDEN_SKIP_REGISTER_FRAME=1'
-
       - name: Upload debug symbols (map + unstripped ELF)
         if: always()
         uses: actions/upload-artifact@v4
@@ -14,6 +254,7 @@
           path: |
             eden/switch.elf
             eden/switch.elf.map
+
 
       - name: Compile AArch64 interpreter for PPC (portability gate)
         # Same libXenon toolchain as the frontend build, proving emucore/a64
@@ -29,3 +270,47 @@
         run: |
           docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
             bash -lc 'set -e; make -C display_test'
+
+      - name: Verify the output is a genuine PPC ELF (not a host binary)
+        run: |
+          set -e
+          for BIN in eden/switch.elf32 display_test/display_test.elf32; do
+            test -f "$BIN" || { echo "::error::missing $BIN"; exit 1; }
+            file "$BIN" | tee /tmp/file.txt
+            grep -q "ELF 32-bit" /tmp/file.txt
+            grep -qE "PowerPC|PPC" /tmp/file.txt
+            readelf -h "$BIN" | tee /tmp/elf.txt
+            grep -qE "PowerPC" /tmp/elf.txt
+            if grep -qE "x86-64|Intel 80386|Advanced Micro" /tmp/elf.txt; then
+              echo "::error::$BIN is an x86 host binary, not a 360 ELF"; exit 1
+            fi
+            echo "OK: $BIN $(stat -c %s "$BIN") bytes"
+          done
+
+      - name: Package release ZIP (eden/ layout)
+        run: |
+          set -e
+          rm -rf stage
+          mkdir -p stage/eden
+          cp eden/switch.elf32 stage/eden/switch.elf
+          cp display_test/display_test.elf32 stage/eden/display_test.elf
+          cp eden/dist/README.txt stage/eden/README.txt
+          cp -r eden/dist/roms   stage/eden/roms
+          cp -r eden/dist/keys   stage/eden/keys
+          cp -r eden/dist/assets stage/eden/assets
+          cp eden/LICENSE.txt    stage/eden/LICENSE.txt
+          # Guarantee the required folders survive even if empty.
+          mkdir -p stage/eden/roms stage/eden/keys \
+                   stage/eden/assets/icons stage/eden/assets/backgrounds \
+                   stage/eden/assets/fonts
+          # Safety: never ship ROMs/keys even if someone drops them in dist/.
+          find stage/eden/roms stage/eden/keys -type f \
+               ! -name README.txt ! -name .gitkeep -delete
+          ( cd stage && zip -r ../eden-frontend.zip eden )
+          unzip -l eden-frontend.zip
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-frontend
+          path: eden-frontend.zip
