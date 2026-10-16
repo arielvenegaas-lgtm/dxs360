@@ -8,6 +8,7 @@
  * needs prod.keys and correct content. Nothing here fakes success.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "core.h"
@@ -73,14 +74,23 @@ int Core_Boot(const Game *g, char *msg, int msg_sz) {
     EmuCore_Init();
 
     if (g->container == CONT_NSO) {
-        static uint8_t buf[4u * 1024u * 1024u];
-        long n = Fs_ReadFile(path, buf, (uint32_t)sizeof(buf));
-        if (n <= 0) { snprintf(msg, msg_sz, "Cannot read %s", g->file); return 0; }
+        /* Allocate the read buffer from the heap instead of a 4 MB static:
+         * a big static here pushes libXenon's low .bss (and its EHCI DMA
+         * structures) up past the window the 360's USB controller can reach,
+         * which makes mass storage vanish. The heap is large and this is used
+         * only after storage is already mounted. */
+        uint8_t *buf = (uint8_t *)malloc(4u * 1024u * 1024u);
+        long n;
+        if (!buf) { snprintf(msg, msg_sz, "Out of memory for NSO buffer"); return 0; }
+        n = Fs_ReadFile(path, buf, 4u * 1024u * 1024u);
+        if (n <= 0) { free(buf); snprintf(msg, msg_sz, "Cannot read %s", g->file); return 0; }
         if (!EmuCore_LoadNso(buf, (unsigned long)n)) {
+            free(buf);
             snprintf(msg, msg_sz,
                      "NSO load failed: bad/unsupported header or outside guest RAM");
             return 0;
         }
+        free(buf);
         int stopped = EmuCore_RunSlice(2000000u);
         snprintf(msg, msg_sz, "Ran NSO: entry=0x%08x insns=%u -> %s",
                  (unsigned)EmuCore_Entry(), (unsigned)EmuCore_InstrCount(),
@@ -113,7 +123,7 @@ int Core_Boot(const Game *g, char *msg, int msg_sz) {
 static const CoreCapability kCaps[CAP_COUNT] = {
     { "CPU",      CAPSTATE_BETA,    "AArch64 interpreter (emucore/a64): integer/logic/move/branch/load-store; runs NSO entry code." },
     { "GPU",      CAPSTATE_BETA,    "Xbox 360 Xenos 2D framebuffer output via libXenon; no guest Tegra/Maxwell 3D yet." },
-    { "Memory",   CAPSTATE_BETA,    "16 MB guest RAM provisioned; bounds-checked, faults are reported." },
+    { "Memory",   CAPSTATE_BETA,    "2 MB guest RAM provisioned; bounds-checked, faults are reported." },
     { "Firmware", CAPSTATE_STUB,    "No Horizon OS/services; SVCs dispatch to an honest, mostly-empty HLE registry." },
     { "Loader",   CAPSTATE_BETA,    "PFS0 + NSO parsed and loaded and executed; NCA decryption needs prod.keys." },
     { "Audio",    CAPSTATE_NONE,    "No audio output at all." },

@@ -134,6 +134,9 @@ static int MountUSB(int (*tick)(void *ctx, const char *status), void *ctx) {
 
     double deadline = Now() + 6.0;
     int found = 0;
+    int saw_device = 0;          /* a device reporting a positive capacity */
+    int seen_cap = 0;
+    unsigned int seen_ss = 0;
     g_dev_count = 0;
     while (Now() < deadline) {
         if (tick && !tick(ctx, "searching for a USB drive")) break;
@@ -142,6 +145,7 @@ static int MountUSB(int (*tick)(void *ctx, const char *status), void *ctx) {
         for (int d = 0; d < 8; ++d) {
             unsigned int ss = 0;
             int cap = USBStorage_Get_Capacity(d, &ss);
+            if (cap > 0) { saw_device = 1; seen_cap = cap; seen_ss = ss; }
             /* A few bridges report the sector size late (0) but a valid
              * capacity; treat 0 as the universal 512 so "any USB" mounts. */
             if (cap > 0 && (ss == 512u || ss == 0u)) { ++g_dev_count; found = 1; }
@@ -151,7 +155,19 @@ static int MountUSB(int (*tick)(void *ctx, const char *status), void *ctx) {
         while (Now() - t0 < 0.1) usb_do_poll();
     }
 
-    if (!found) return 0;
+    if (!found) {
+        /* Tell the two failure modes apart in the UI: nothing enumerated at all
+         * (EHCI/DMA/layout problem) vs. a device that answered but with a sector
+         * size we cannot mount. */
+        char m[80];
+        if (saw_device)
+            snprintf(m, sizeof(m), "USB: device answered (cap=%d ss=%u)",
+                     seen_cap, seen_ss);
+        else
+            snprintf(m, sizeof(m), "USB: nothing enumerated on EHCI/OHCI");
+        AppendDiag(m);
+        return 0;
+    }
 
     int added = 0;
     for (int d = 0; d < 8 && g_vol_count < FS_MAX_VOLUMES; ++d) {
@@ -275,7 +291,12 @@ int Fs_MountAll(int (*tick)(void *ctx, const char *status), void *ctx) {
     }
 
     int usb = MountUSB(tick, ctx);
-    int hdd = MountHDD(tick, ctx);
+    /* Only probe the internal ATA/HDD when no USB volume mounted. xenon_ata_init()
+     * pokes ATA/SATA registers, and on a stock 360 the internal drive is FATX
+     * (unsupported) anyway, so probing it after a good USB mount only adds noise
+     * and side effects. If USB turns up nothing, the HDD is still tried so a
+     * FAT32 internal drive can be used. */
+    int hdd = (usb <= 0) ? MountHDD(tick, ctx) : 0;
 
     if (g_vol_count <= 0) {
         g_ready = 0;

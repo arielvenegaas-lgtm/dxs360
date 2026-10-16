@@ -22,11 +22,17 @@ extern "C" {
  * shared RAM, so this is a modest, fixed reservation rather than a guess at the
  * Switch's 4 GB address space. Modules that link outside it fail to load with a
  * clear reason rather than silently corrupting memory. */
-/* Kept small on purpose: this array lives in .bss and the whole ELF (with its
- * USB/ATA drivers) must fit in the RAM the launcher grants. 64 MB inflated the
- * image to ~78 MB and stopped USB mass storage from mounting; 16 MB is plenty
- * for the NSO modules this frontend actually runs. */
-#define EMU_GUEST_RAM_SIZE (16u * 1024u * 1024u)
+/* Kept small on purpose. This array lives low in .bss, and libXenon's EHCI USB
+ * driver keeps its DMA structures (usb_os.c heapspace, plus malloc'd transfer
+ * buffers) in the same low region; the 360's EHCI cannot reach the whole 512 MB
+ * window, so the further .bss pushes those structures up the earlier USB mass
+ * storage stops enumerating. 64 MB -> ~78 MB image broke USB outright; 16 MB ->
+ * ~31 MB was still too high (devices went missing on real hardware). 2 MB keeps
+ * the low region at roughly the size of the last known-working (0.3.0) image,
+ * which mounts USB reliably, and is ample for the small NSO modules the
+ * frontend runs today. Raise this only together with a linker change that keeps
+ * libXenon's DMA structures below the EHCI window. */
+#define EMU_GUEST_RAM_SIZE (2u * 1024u * 1024u)
 
 /* Initialise guest RAM, the AArch64 interpreter, the HLE bridge and install the
  * SVC handler. Idempotent. Returns 1 on success. */

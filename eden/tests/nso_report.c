@@ -19,7 +19,7 @@
 #include "loader.h"
 
 /* The synthetic image: text/rodata/data at fixed guest locations (all within
- * the 64 MB guest window the frontend provisions). */
+ * the small guest window the frontend provisions). */
 #define TEXT_LOC 0x1000u
 #define RO_LOC   0x2000u
 #define DATA_LOC 0x3000u
@@ -133,7 +133,7 @@ int main(void) {
         uint64_t sz = build_nso(nsbuf, ld, 1);
         Nso_Parse(&nso, nsbuf, sz); Nso_LoadIntoGuest(&nso, nsbuf, sz, &mem, &img);
         A64_Reset(&cpu, img.entry, 1);
-        A64_SetX(&cpu, 0, 0xFFFFFFFFu); /* far outside 64 MB guest RAM */
+        A64_SetX(&cpu, 0, 0xFFFFFFFFu); /* far outside the guest RAM window */
         A64Halt h = A64_Run(&cpu, 10u);
         printf("  load : halt=%s fault_addr=0x%llx size=%llu write=%d\n",
                A64_HaltName(h), (unsigned long long)cpu.fault_addr,
