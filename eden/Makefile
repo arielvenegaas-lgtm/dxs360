@@ -13,6 +13,12 @@ endif
 
 include $(DEVKITXENON)/rules
 
+# Use our own linker script (based on libXenon's) so the emulation core's guest
+# RAM lives in its own high section instead of low .bss. A big low .bss pushes
+# libXenon's EHCI USB DMA structures past what the 360's controller can reach,
+# which makes USB mass storage disappear; see eden/app.lds.
+LDSCRIPT := $(CURDIR)/app.lds
+
 TARGET   := switch
 BUILD    := build
 SOURCES  := source

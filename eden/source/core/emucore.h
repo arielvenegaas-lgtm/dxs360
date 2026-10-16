@@ -22,17 +22,16 @@ extern "C" {
  * shared RAM, so this is a modest, fixed reservation rather than a guess at the
  * Switch's 4 GB address space. Modules that link outside it fail to load with a
  * clear reason rather than silently corrupting memory. */
-/* Kept small on purpose. This array lives low in .bss, and libXenon's EHCI USB
+/* This array is placed in its own ".guestram" output section by eden/app.lds,
+ * high above the heap, so it does NOT sit in low .bss. libXenon's EHCI USB
  * driver keeps its DMA structures (usb_os.c heapspace, plus malloc'd transfer
- * buffers) in the same low region; the 360's EHCI cannot reach the whole 512 MB
- * window, so the further .bss pushes those structures up the earlier USB mass
- * storage stops enumerating. 64 MB -> ~78 MB image broke USB outright; 16 MB ->
- * ~31 MB was still too high (devices went missing on real hardware). 2 MB keeps
- * the low region at roughly the size of the last known-working (0.3.0) image,
- * which mounts USB reliably, and is ample for the small NSO modules the
- * frontend runs today. Raise this only together with a linker change that keeps
- * libXenon's DMA structures below the EHCI window. */
-#define EMU_GUEST_RAM_SIZE (2u * 1024u * 1024u)
+ * buffers) low in RAM, and the 360's EHCI cannot reach the whole 512 MB window,
+ * so a large low .bss pushes those structures out of reach and USB mass storage
+ * stops enumerating (64 MB -> ~78 MB image broke USB outright; 16 MB -> ~31 MB
+ * still lost the devices on real hardware). Keeping it out of .bss lets the
+ * guest RAM size grow without disturbing the working USB layout. This is ample
+ * for the small NSO modules the frontend runs today. */
+#define EMU_GUEST_RAM_SIZE (8u * 1024u * 1024u)
 
 /* Initialise guest RAM, the AArch64 interpreter, the HLE bridge and install the
  * SVC handler. Idempotent. Returns 1 on success. */

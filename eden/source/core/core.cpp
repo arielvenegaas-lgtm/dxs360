@@ -123,7 +123,7 @@ int Core_Boot(const Game *g, char *msg, int msg_sz) {
 static const CoreCapability kCaps[CAP_COUNT] = {
     { "CPU",      CAPSTATE_BETA,    "AArch64 interpreter (emucore/a64): integer/logic/move/branch/load-store; runs NSO entry code." },
     { "GPU",      CAPSTATE_BETA,    "Xbox 360 Xenos 2D framebuffer output via libXenon; no guest Tegra/Maxwell 3D yet." },
-    { "Memory",   CAPSTATE_BETA,    "2 MB guest RAM provisioned; bounds-checked, faults are reported." },
+    { "Memory",   CAPSTATE_BETA,    "8 MB guest RAM provisioned; bounds-checked, faults are reported." },
     { "Firmware", CAPSTATE_STUB,    "No Horizon OS/services; SVCs dispatch to an honest, mostly-empty HLE registry." },
     { "Loader",   CAPSTATE_BETA,    "PFS0 + NSO parsed and loaded and executed; NCA decryption needs prod.keys." },
     { "Audio",    CAPSTATE_NONE,    "No audio output at all." },

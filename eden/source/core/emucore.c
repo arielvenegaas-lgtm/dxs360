@@ -15,8 +15,9 @@
 
 /* The whole guest address space lives in BSS (the frontend runs from a flat
  * static ELF; there is no host heap to speak of on libXenon). */
-static uint8_t         g_ram[EMU_GUEST_RAM_SIZE];
-static A64GuestMem     g_mem;
+__attribute__((section(".guestram")))
+static uint8_t g_ram[EMU_GUEST_RAM_SIZE];
+static A64GuestMem g_mem;
 static A64             g_cpu;
 static HleState        g_hle;
 static LoadedImage     g_img;
