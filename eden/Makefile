@@ -97,6 +97,11 @@ else
 
 DEPENDS := $(OFILES:.o=.d)
 
+# The sub-make must build the final ELF by default. Without this, the first
+# explicit target below (emu_*.o) becomes the default goal and `make -C eden`
+# would only compile one object instead of linking switch.elf.
+.DEFAULT_GOAL := $(OUTPUT).elf32
+
 # Portable emucore objects. Targets are relative to the build directory; the
 # sources come from the exported absolute $(EMUCORE). They are compiled with the
 # same flags as the rest of the frontend (libXenon PPC toolchain) but need no

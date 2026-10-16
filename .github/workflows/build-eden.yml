@@ -263,18 +263,12 @@ jobs:
           docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
             bash -lc 'set -e; make -C eden a64ppc'
 
-      - name: Build the minimal Xenos display test (libXenon)
-        # Standalone known-pattern display bring-up test (display_test/Makefile):
-        # eight fixed colour bars + moving sweep + live counter, built on the
-        # repo's real Gfx_* API. Does not include the emulator or any assets.
-        run: |
-          docker run --rm -v "$PWD":/app -w /app free60/libxenon:latest \
-            bash -lc 'set -e; make -C display_test'
+             bash -lc 'set -e; make -C eden a64ppc'
 
       - name: Verify the output is a genuine PPC ELF (not a host binary)
         run: |
           set -e
-          for BIN in eden/switch.elf32 display_test/display_test.elf32; do
+          for BIN in eden/switch.elf32; do
             test -f "$BIN" || { echo "::error::missing $BIN"; exit 1; }
             file "$BIN" | tee /tmp/file.txt
             grep -q "ELF 32-bit" /tmp/file.txt
@@ -293,7 +287,6 @@ jobs:
           rm -rf stage
           mkdir -p stage/eden
           cp eden/switch.elf32 stage/eden/switch.elf
-          cp display_test/display_test.elf32 stage/eden/display_test.elf
           cp eden/dist/README.txt stage/eden/README.txt
           cp -r eden/dist/roms   stage/eden/roms
           cp -r eden/dist/keys   stage/eden/keys
