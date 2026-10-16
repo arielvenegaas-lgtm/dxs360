@@ -53,6 +53,7 @@ typedef enum {
     CAPSTATE_NONE = 0,  /* nothing implemented                        */
     CAPSTATE_STUB,      /* interface only; no behaviour               */
     CAPSTATE_PARTIAL,   /* some real, non-executing functionality      */
+    CAPSTATE_BETA,      /* real and executing, still incomplete        */
     CAPSTATE_READY      /* fully working (never, in this build)        */
 } CoreCapState;
 

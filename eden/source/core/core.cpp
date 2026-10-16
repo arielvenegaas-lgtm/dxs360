@@ -111,11 +111,11 @@ int Core_Boot(const Game *g, char *msg, int msg_sz) {
 /* ---- capability model -------------------------------------------------- */
 
 static const CoreCapability kCaps[CAP_COUNT] = {
-    { "CPU",      CAPSTATE_PARTIAL, "AArch64 interpreter (emucore/a64): integer/logic/move/branch/load-store." },
-    { "GPU",      CAPSTATE_NONE,    "No Tegra/Maxwell GPU emulation; only the 2D UI framebuffer." },
-    { "Memory",   CAPSTATE_PARTIAL, "64 MB guest RAM provisioned; bounds-checked, faults are reported." },
-    { "Firmware", CAPSTATE_NONE,    "No Horizon OS/services; SVCs dispatch to an empty HLE registry." },
-    { "Loader",   CAPSTATE_PARTIAL, "PFS0 + NSO parsed and loaded; NCA decryption needs prod.keys." },
+    { "CPU",      CAPSTATE_BETA,    "AArch64 interpreter (emucore/a64): integer/logic/move/branch/load-store; runs NSO entry code." },
+    { "GPU",      CAPSTATE_BETA,    "Xbox 360 Xenos 2D framebuffer output via libXenon; no guest Tegra/Maxwell 3D yet." },
+    { "Memory",   CAPSTATE_BETA,    "16 MB guest RAM provisioned; bounds-checked, faults are reported." },
+    { "Firmware", CAPSTATE_STUB,    "No Horizon OS/services; SVCs dispatch to an honest, mostly-empty HLE registry." },
+    { "Loader",   CAPSTATE_BETA,    "PFS0 + NSO parsed and loaded and executed; NCA decryption needs prod.keys." },
     { "Audio",    CAPSTATE_NONE,    "No audio output at all." },
 };
 
@@ -130,6 +130,7 @@ const char *Core_CapStateName(CoreCapState s) {
     switch (s) {
     case CAPSTATE_STUB:    return "stub";
     case CAPSTATE_PARTIAL: return "partial";
+    case CAPSTATE_BETA:    return "beta";
     case CAPSTATE_READY:   return "ready";
     default:               return "not implemented";
     }
@@ -153,7 +154,8 @@ const CoreRequirement *Core_RequirementAt(int i) {
 }
 
 const char *Core_Feasibility(void) {
-    return "A partial AArch64 interpreter now runs, but full Switch emulation "
-           "is still not feasible here: 3 PowerPC cores and 512 MB RAM versus "
-           "8 ARM cores and 4 GB, plus no GPU/OS.";
+    return "Beta: the AArch64 interpreter, guest RAM and the PFS0/NSO loaders "
+           "run on real Xbox 360 hardware, so standalone NSO modules execute. "
+           "Retail NSP titles still need prod.keys (NCA decryption) plus a "
+           "GPU/OS, so they are not bootable yet.";
 }

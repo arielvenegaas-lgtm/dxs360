@@ -328,7 +328,7 @@ static void DrawHome(GfxContext *g, EdenApp *a) {
     }
     Gfx_DrawText(g, px, ly, 2 * u, COL_TEXT_DIM, line); ly += 30 * u;
 
-    Gfx_DrawText(g, px, ly, 2 * u, COL_WARN, "Frontend only - no game can boot yet.");
+    Gfx_DrawText(g, px, ly, 2 * u, COL_GOOD, "Beta - AArch64 core runs NSO modules; retail NSP needs prod.keys.");
 }
 
 static void DrawEmpty(GfxContext *g, EdenApp *a, int bodyY, int bodyH) {
@@ -588,7 +588,8 @@ static void DrawSystem(GfxContext *g, EdenApp *a) {
     for (int i = 0; i < Core_CapabilityCount(); ++i) {
         const CoreCapability *c = Core_CapabilityAt(i);
         uint32_t sc = (c->state == CAPSTATE_NONE) ? COL_BAD
-                    : (c->state == CAPSTATE_READY) ? COL_GOOD : COL_WARN;
+                    : (c->state == CAPSTATE_BETA ||
+                       c->state == CAPSTATE_READY) ? COL_GOOD : COL_WARN;
         Gfx_DrawText(g, x, y, 2 * u, COL_TEXT, c->name);
         int sx = x + 130 * u;
         Gfx_DrawText(g, sx, y, 2 * u, sc, Core_CapStateName(c->state));
@@ -628,9 +629,10 @@ static void DrawSystem(GfxContext *g, EdenApp *a) {
     /* ---- verdict ------------------------------------------------------ */
     Fill(g, x, y, w, 2 * 7 * u + 24 * u, COL_PANEL);
     Frame(g, x, y, w, 2 * 7 * u + 24 * u, 1, COL_LINE);
-    Gfx_DrawText(g, x + 16 * u, y + 12 * u, 2 * u, COL_WARN, Core_Feasibility());
+    Gfx_DrawText(g, x + 16 * u, y + 12 * u, 2 * u, COL_ACCENT, Core_Feasibility());
     y += 2 * 7 * u + 34 * u;
-    Gfx_DrawText(g, x, y, u, COL_MUTED, "Nothing on this screen is emulated - it only reports status.");
+    Gfx_DrawText(g, x, y, u, COL_MUTED,
+                 "Beta status: NSO modules run on the interpreter; retail NSP does not.");
 }
 
 static void DrawMenuOverlay(GfxContext *g, EdenApp *a) {

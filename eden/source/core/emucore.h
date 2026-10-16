@@ -22,7 +22,11 @@ extern "C" {
  * shared RAM, so this is a modest, fixed reservation rather than a guess at the
  * Switch's 4 GB address space. Modules that link outside it fail to load with a
  * clear reason rather than silently corrupting memory. */
-#define EMU_GUEST_RAM_SIZE (64u * 1024u * 1024u)
+/* Kept small on purpose: this array lives in .bss and the whole ELF (with its
+ * USB/ATA drivers) must fit in the RAM the launcher grants. 64 MB inflated the
+ * image to ~78 MB and stopped USB mass storage from mounting; 16 MB is plenty
+ * for the NSO modules this frontend actually runs. */
+#define EMU_GUEST_RAM_SIZE (16u * 1024u * 1024u)
 
 /* Initialise guest RAM, the AArch64 interpreter, the HLE bridge and install the
  * SVC handler. Idempotent. Returns 1 on success. */

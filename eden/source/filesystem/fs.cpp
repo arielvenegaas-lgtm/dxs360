@@ -142,7 +142,9 @@ static int MountUSB(int (*tick)(void *ctx, const char *status), void *ctx) {
         for (int d = 0; d < 8; ++d) {
             unsigned int ss = 0;
             int cap = USBStorage_Get_Capacity(d, &ss);
-            if (cap > 0 && ss == 512u) { ++g_dev_count; found = 1; }
+            /* A few bridges report the sector size late (0) but a valid
+             * capacity; treat 0 as the universal 512 so "any USB" mounts. */
+            if (cap > 0 && (ss == 512u || ss == 0u)) { ++g_dev_count; found = 1; }
         }
         if (found) break;
         double t0 = Now();
@@ -155,7 +157,7 @@ static int MountUSB(int (*tick)(void *ctx, const char *status), void *ctx) {
     for (int d = 0; d < 8 && g_vol_count < FS_MAX_VOLUMES; ++d) {
         unsigned int ss = 0;
         int cap = USBStorage_Get_Capacity(d, &ss);
-        if (cap <= 0 || ss != 512u) continue;
+        if (cap <= 0 || (ss != 512u && ss != 0u)) continue;
 
         Vol *v = &g_vols[g_vol_count];
         memset(v, 0, sizeof(*v));
@@ -277,9 +279,13 @@ int Fs_MountAll(int (*tick)(void *ctx, const char *status), void *ctx) {
 
     if (g_vol_count <= 0) {
         g_ready = 0;
-        SetStatus("no FAT32 volume");
-        if (g_dev_count > 0) AppendDiag("USB present but not FAT32");
-        if (!g_diag[0]) SetDiag("no storage");
+        if (g_dev_count <= 0)      AppendDiag("no USB mass-storage device");
+        else                       AppendDiag("USB device present but no FAT32 volume");
+        if (!g_diag[0])            SetDiag("no storage");
+        /* Fold the reason into the status so it is visible in the UI. */
+        char buf[96];
+        snprintf(buf, sizeof(buf), "no FAT32 volume (%s)", g_diag);
+        SetStatus(buf);
         return 0;
     }
 
