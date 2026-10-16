@@ -135,6 +135,35 @@ jobs:
           # fsck.fat + mtools that the result is genuine FAT32.
           /tmp/test_fat_write /tmp
 
+      - name: Host test (AArch64 interpreter deterministic entry point)
+        # Runs a fixed AArch64 program (known encodings) through emucore/a64 on
+        # the x86_64 runner and checks registers, flags, memory, branches and
+        # final PC. The interpreter is host-independent, so no native AArch64
+        # is needed for this check.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -c emucore/a64/a64.c -o /tmp/a64_host.o
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I eden/source \
+              eden/tests/test_a64_entry.c eden/source/a64_test_entry.c /tmp/a64_host.o \
+              -o /tmp/test_a64_entry
+          /tmp/test_a64_entry
+
+      - name: Big-endian PowerPC run (qemu-ppc) of the interpreter
+        # Cross-compile the interpreter + deterministic self-test for 32-bit
+        # big-endian PowerPC and execute it under qemu-ppc. The aarch64/x86
+        # hosts are little-endian, so this is the step that actually catches
+        # host byte-order bugs (e.g. instruction fetch endianness).
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-powerpc-linux-gnu libc6-dev-powerpc-cross qemu-user
+          powerpc-linux-gnu-gcc -std=c99 -Wall -Wextra -O1 \
+              -I emucore/a64 -I eden/source \
+              eden/tests/test_a64_entry.c eden/source/a64_test_entry.c emucore/a64/a64.c \
+              -static -o /tmp/test_a64_entry_ppc
+          file /tmp/test_a64_entry_ppc
+          qemu-ppc /tmp/test_a64_entry_ppc
+
       - name: Pull libXenon Docker image
         run: docker pull free60/libxenon:latest
 

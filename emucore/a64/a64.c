@@ -883,8 +883,9 @@ void A64_Reset(A64 *c, uint64_t pc, int reset_regs) {
 }
 
 A64Halt A64_Step(A64 *c) {
-    uint32_t insn = 0;
-    if (!MemRead(c, c->pc, &insn, 4)) return c->halt;
+    uint64_t insn_le = 0;
+    if (!LoadLE(c, c->pc, &insn_le, 4)) return c->halt;
+    uint32_t insn = (uint32_t)insn_le;
     uint64_t pc = c->pc;
     c->pc = pc + 4;
     c->halt = A64_OK;

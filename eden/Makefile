@@ -66,11 +66,13 @@ $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@make --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
-# Portability gate: compile the portable AArch64 interpreter with the same
-# PPC/libXenon toolchain (not linked in here yet). Catches host-only code.
+# Portability gate: compile the portable AArch64 interpreter and the
+# deterministic self-test entry point with the same PPC/libXenon toolchain
+# (not linked in here yet). Catches host-only code and byte-order assumptions.
 a64ppc:
-	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -c $(CURDIR)/../emucore/a64/a64.c -o /tmp/a64_ppc.o
-	@echo "a64 PPC compile OK"
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -c $(CURDIR)/../emucore/a64/a64.c -o /tmp/a64_ppc.o
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -c $(CURDIR)/source/a64_test_entry.c -o /tmp/a64_test_entry_ppc.o
+	@echo "a64 PPC compile OK (interpreter + deterministic entry point)"
 
 clean:
 	@echo clean ...
