@@ -13,12 +13,6 @@ endif
 
 include $(DEVKITXENON)/rules
 
-# Use our own linker script (based on libXenon's) so the emulation core's guest
-# RAM lives in its own high section instead of low .bss. A big low .bss pushes
-# libXenon's EHCI USB DMA structures past what the 360's controller can reach,
-# which makes USB mass storage disappear; see eden/app.lds.
-LDSCRIPT := $(CURDIR)/app.lds
-
 TARGET   := switch
 BUILD    := build
 SOURCES  := source
@@ -54,6 +48,10 @@ ifneq ($(BUILD),$(notdir $(CURDIR)))
 #---------------------------------------------------------------------------------
 
 export OUTPUT   := $(CURDIR)/$(TARGET)
+
+# Absolute path of this directory, exported so the build sub-make (whose $(CURDIR)
+# is the build/ subdir) can find our linker script. See the else branch below.
+export EDEN_ROOT := $(CURDIR)
 
 # Portable emulation modules (plain C99, no libXenon dependency) live at the
 # repository root. Exported so the sub-make compiles them from an absolute path.
@@ -102,6 +100,13 @@ else
 #---------------------------------------------------------------------------------
 
 DEPENDS := $(OFILES:.o=.d)
+
+# Use our own linker script (based on libXenon's) so the emulation core's guest
+# RAM lives in its own high section instead of low .bss. A big low .bss pushes
+# libXenon's EHCI USB DMA structures past what the 360's controller can reach,
+# which makes USB mass storage disappear; see eden/app.lds. $(EDEN_ROOT) comes
+# from the parent make because $(CURDIR) here is the build/ subdirectory.
+LDSCRIPT := $(EDEN_ROOT)/app.lds
 
 # The sub-make must build the final ELF by default. Without this, the first
 # explicit target below (emu_*.o) becomes the default goal and `make -C eden`
