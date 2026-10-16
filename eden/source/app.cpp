@@ -239,6 +239,11 @@ void App_Init(EdenApp *a, GfxContext *gfx) {
     a->back_to = SCR_HOME;
     a->fs_ready = Fs_Ready();
     SetStr(a->status, (int)sizeof(a->status), "Ready");
+
+    /* Bring up the emulation core (guest RAM + interpreter + loaders) and run
+     * its deterministic self-test once at boot, so the status line reports the
+     * real result instead of "not run". Cheap: a few dozen instructions. */
+    Core_Init();
 }
 
 static void ToggleInt(int *v) { *v = *v ? 0 : 1; }
