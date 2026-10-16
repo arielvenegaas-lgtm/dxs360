@@ -234,17 +234,21 @@ static int DecodeLogImm(uint32_t N, uint32_t imms, uint32_t immr, int regsize, u
 /* ------------------------------------------------------------- memory I/O */
 
 static int MemRead(A64 *c, uint64_t addr, void *buf, size_t len) {
-    if (!c->read || !c->read(c->memctx, addr, buf, len)) {
+    if (c->read == NULL || !c->read(c->memctx, addr, buf, len)) {
         c->halt = A64_HALT_MEMFAULT;
         c->fault_addr = addr;
+        c->fault_size = len;
+        c->fault_write = 0;
         return 0;
     }
     return 1;
 }
 static int MemWrite(A64 *c, uint64_t addr, const void *buf, size_t len) {
-    if (!c->write || !c->write(c->memctx, addr, (void *)buf, len)) {
+    if (c->write == NULL || !c->write(c->memctx, addr, (void *)buf, len)) {
         c->halt = A64_HALT_MEMFAULT;
         c->fault_addr = addr;
+        c->fault_size = len;
+        c->fault_write = 1;
         return 0;
     }
     return 1;
@@ -822,8 +826,13 @@ static void DoBranchSys(A64 *c, uint32_t insn, uint64_t pc) {
     if (Field(insn, 31, 24) == 0xD4) {
         unsigned opc = Field(insn, 23, 21), LL = Field(insn, 1, 0);
         c->svc_imm = Field(insn, 20, 5);
-        if (opc == 0 && LL == 1) { c->halt = A64_HALT_SVC; return; }
-        if (opc == 0 && LL == 2) { c->halt = A64_HALT_SVC; return; } /* HVC -> treat as svc */
+        if (opc == 0 && (LL == 1 || LL == 2)) { /* SVC / HVC -> HLE bridge */
+            if (c->svc_handler != NULL && c->svc_handler(c->svc_ctx, c, c->svc_imm)) {
+                return; /* handled; PC already points past the SVC */
+            }
+            c->halt = A64_HALT_SVC;
+            return;
+        }
         if (opc == 1 && LL == 0) { c->halt = A64_HALT_BRK; return; }
         if (opc == 2 && LL == 0) { c->halt = A64_HALT_HLT; return; }
         Undef(c, pc);
@@ -877,9 +886,30 @@ void A64_Reset(A64 *c, uint64_t pc, int reset_regs) {
     c->pc = pc;
     c->halt = A64_OK;
     c->fault_addr = 0;
+    c->fault_size = 0;
+    c->fault_write = 0;
     c->undefined_pc = 0;
     c->svc_imm = 0;
     c->icount = 0;
+}
+
+void A64_SetSvcHandler(A64 *c, A64SvcFn fn, void *ctx) {
+    c->svc_handler = fn;
+    c->svc_ctx = ctx;
+}
+
+const char *A64_HaltName(A64Halt halt) {
+    switch (halt) {
+        case A64_OK:                 return "ok";
+        case A64_HALT_SVC:           return "svc (unhandled)";
+        case A64_HALT_BRK:           return "brk";
+        case A64_HALT_HLT:           return "hlt";
+        case A64_HALT_UNDEFINED:     return "undefined-encoding";
+        case A64_HALT_UNIMPLEMENTED: return "unimplemented-encoding";
+        case A64_HALT_MEMFAULT:      return "memory-fault";
+        case A64_HALT_STEPLIMIT:     return "step-limit";
+        default:                     return "unknown-halt";
+    }
 }
 
 A64Halt A64_Step(A64 *c) {

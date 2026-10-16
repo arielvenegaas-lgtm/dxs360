@@ -148,21 +148,53 @@ jobs:
               -o /tmp/test_a64_entry
           /tmp/test_a64_entry
 
+      - name: Host tests (guest memory, SVC/HLE bridge, PFS0/NSO loaders)
+        # Exercises the new emucore modules on the runner: bounds-checked guest
+        # memory + interpreter fault metadata, the honest SVC->HLE dispatcher,
+        # and the portable PFS0/NSO parsers feeding an LZ4-loaded image into
+        # guest memory and executing it. No keys or real content required.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 \
+              emucore/a64/a64.c emucore/a64/a64_mem.c eden/tests/test_a64_mem.c \
+              -o /tmp/test_a64_mem
+          /tmp/test_a64_mem
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/hle \
+              emucore/a64/a64.c emucore/a64/a64_mem.c emucore/hle/hle.c \
+              eden/tests/test_hle_svc.c -o /tmp/test_hle_svc
+          /tmp/test_hle_svc
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/loader \
+              emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/loader/pfs0.c emucore/loader/nso.c emucore/loader/loader.c \
+              eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso
+          /tmp/test_pfs0_nso
+
       - name: Big-endian PowerPC run (qemu-ppc) of the interpreter
-        # Cross-compile the interpreter + deterministic self-test for 32-bit
-        # big-endian PowerPC and execute it under qemu-ppc. The aarch64/x86
-        # hosts are little-endian, so this is the step that actually catches
-        # host byte-order bugs (e.g. instruction fetch endianness).
+        # Cross-compile the interpreter, guest memory, HLE bridge and
+        # PFS0/NSO loader for 32-bit big-endian PowerPC and execute the tests
+        # under qemu-ppc. The aarch64/x86 hosts are little-endian, so this is
+        # the step that actually catches host byte-order bugs (e.g. instruction
+        # fetch endianness and guest-memory word order).
         run: |
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-powerpc-linux-gnu libc6-dev-powerpc-cross qemu-user
-          powerpc-linux-gnu-gcc -std=c99 -Wall -Wextra -O1 \
-              -I emucore/a64 -I eden/source \
+          PPC="powerpc-linux-gnu-gcc -std=c99 -Wall -Wextra -O1 -static"
+          $PPC -I emucore/a64 -I eden/source \
               eden/tests/test_a64_entry.c eden/source/a64_test_entry.c emucore/a64/a64.c \
-              -static -o /tmp/test_a64_entry_ppc
+              -o /tmp/test_a64_entry_ppc
           file /tmp/test_a64_entry_ppc
           qemu-ppc /tmp/test_a64_entry_ppc
+          $PPC -I emucore/a64 \
+              emucore/a64/a64.c emucore/a64/a64_mem.c eden/tests/test_a64_mem.c \
+              -o /tmp/test_a64_mem_ppc && qemu-ppc /tmp/test_a64_mem_ppc
+          $PPC -I emucore/a64 -I emucore/hle \
+              emucore/a64/a64.c emucore/a64/a64_mem.c emucore/hle/hle.c \
+              eden/tests/test_hle_svc.c -o /tmp/test_hle_svc_ppc && qemu-ppc /tmp/test_hle_svc_ppc
+          $PPC -I emucore/a64 -I emucore/loader \
+              emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/loader/pfs0.c emucore/loader/nso.c emucore/loader/loader.c \
+              eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso_ppc && qemu-ppc /tmp/test_pfs0_nso_ppc
 
       - name: Pull libXenon Docker image
         run: docker pull free60/libxenon:latest

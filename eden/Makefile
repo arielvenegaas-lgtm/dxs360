@@ -71,8 +71,13 @@ $(BUILD):
 # (not linked in here yet). Catches host-only code and byte-order assumptions.
 a64ppc:
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -c $(CURDIR)/../emucore/a64/a64.c -o /tmp/a64_ppc.o
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -c $(CURDIR)/../emucore/a64/a64_mem.c -o /tmp/a64_mem_ppc.o
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/hle -c $(CURDIR)/../emucore/hle/hle.c -o /tmp/hle_ppc.o
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/loader -c $(CURDIR)/../emucore/loader/pfs0.c -o /tmp/pfs0_ppc.o
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/loader -c $(CURDIR)/../emucore/loader/nso.c -o /tmp/nso_ppc.o
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/loader -c $(CURDIR)/../emucore/loader/loader.c -o /tmp/loader_ppc.o
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -c $(CURDIR)/source/a64_test_entry.c -o /tmp/a64_test_entry_ppc.o
-	@echo "a64 PPC compile OK (interpreter + deterministic entry point)"
+	@echo "a64 PPC compile OK (interpreter, guest memory, HLE bridge, PFS0/NSO loader, deterministic entry point)"
 
 clean:
 	@echo clean ...
