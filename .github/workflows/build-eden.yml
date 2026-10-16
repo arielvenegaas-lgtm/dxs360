@@ -123,6 +123,18 @@ jobs:
           /tmp/test_fat_mount /tmp/multi.img roms "Cave Story+ [0100B7D0022EE000][v0][US].nsp"
           /tmp/test_fat_mount /tmp/multi.img keys "prod.keys"
 
+      - name: Host test (FAT32 writer mkdir / LFN / stream / rollback)
+        run: |
+          set -e
+          # mkfs.fat, fsck.fat and mtools are installed by the fuzz step above.
+          gcc -std=c99 -Wall -c xenon/source/fat32.c -I xenon/source -o /tmp/fat32_w.o
+          g++ -std=c++11 -Wall -I xenon/source \
+              eden/tests/test_fat_write.cpp /tmp/fat32_w.o -o /tmp/test_fat_write
+          # Creates its own FAT32 images, writes short + long (LFN) names, a
+          # nested dir and a streamed file, reads them back, and verifies with
+          # fsck.fat + mtools that the result is genuine FAT32.
+          /tmp/test_fat_write /tmp
+
       - name: Pull libXenon Docker image
         run: docker pull free60/libxenon:latest
 

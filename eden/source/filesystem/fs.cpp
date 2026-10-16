@@ -1,4 +1,16 @@
-/* fs.cpp: see fs.h. */
+/* fs.cpp: see fs.h.
+ *
+ * Layers the read/write FAT32 parser (xenon/source/fat32.c) on top of libXenon's
+ * raw sector APIs. Two kinds of backing store are supported:
+ *
+ *   - USB mass storage (any number of devices, sector read + write)
+ *   - The internal HDD over ATA (sector read + write)
+ *
+ * Both are exposed as "volumes" addressed by a small index. Volume 0 is the
+ * default one used by the legacy single-volume calls, so older code is
+ * unaffected. The stock Xbox 360 HDD is FATX, which we can neither read nor
+ * write; it is detected and reported, never written to.
+ */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,39 +33,46 @@ int USBStorage_Init(void);
 int USBStorage_Get_Capacity(int device, unsigned int *sector_size);
 int USBStorage_Read_Sectors(int device, unsigned int sector,
                             unsigned int numSectors, void *buffer);
+int USBStorage_Write_Sectors(int device, unsigned int sector,
+                             unsigned int numSectors, const void *buffer);
 
+/* ATA (internal HDD). `sec_t` is uint32_t, `lba_t` is unsigned long long. */
 int xenon_ata_init(void);
+int xenon_ata_read_sectors(uint32_t start_sector, uint32_t num_sectors, void *buf);
+int xenon_ata_write_sectors(unsigned long long start_sector, int num_sectors,
+                            const void *buf);
 }
 
 #include "fs.h"
 #include "fat32.h"
 
-static int  g_dev  = -1;
-static int  g_dev_count = 0;
-static uint64_t g_vol_size = 0;
-static int  g_ready = 0;
-static char g_roms[FS_PATH_MAX];
-static char g_scan_roots[FS_MAX_ROOTS][FS_PATH_MAX];
-static int  g_scan_root_count = 0;
-static char g_devtype[16];
-static char g_diag[128];
-static char g_status[96];
-static int  g_keys = -1;
-static char g_keys_status[64];
+/* --- volumes ------------------------------------------------------------ */
+
+struct Vol {
+    int      used;
+    Fat32   *fs;
+    int      is_usb;   /* 1 = USB mass storage, 0 = ATA HDD        */
+    int      dev;      /* USB device index (is_usb) or -1          */
+    int      writable; /* backing store supports sector writes     */
+    const char *type;  /* "USB" / "HDD"                            */
+    const char *label; /* "usb" / "hdd"                            */
+};
+
+static Vol      g_vols[FS_MAX_VOLUMES];
+static int      g_vol_count = 0;
+static int      g_have_ata = 0;      /* HDD was probed at least once      */
+static int      g_ata_type = 0;      /* last Fat32FsType seen on the HDD  */
+static int      g_dev_count = 0;     /* USB mass-storage devices found    */
+static int      g_ready = 0;
+static char     g_roms[FS_PATH_MAX];
+static char     g_scan_roots[FS_MAX_ROOTS][FS_PATH_MAX];
+static int      g_scan_root_count = 0;
+static char     g_devtype[16];
+static char     g_diag[160];
+static char     g_status[96];
+static int      g_keys = -1;
+static char     g_keys_status[64];
 static unsigned char g_keybuf[65536];
-
-static int ReadSectors(void *ctx, uint32_t lba, uint32_t count, void *buf) {
-    (void)ctx;
-    if (g_dev < 0) return 0;
-    return USBStorage_Read_Sectors(g_dev, (unsigned)lba, (unsigned)count, buf) ? 1 : 0;
-}
-
-static void PollBuses(void) {
-    for (int i = 0; i < usb_buscnt; ++i) {
-        usbbus_t *b = usb_buses[i];
-        if (b) { usb_poll(b); usb_daemon(b); }
-    }
-}
 
 static void SetStatus(const char *s) {
     int i = 0;
@@ -67,13 +86,230 @@ static void SetDiag(const char *s) {
     g_diag[i] = 0;
 }
 
+/* Appends to the diagnostic buffer (so several volumes can report at once). */
+static void AppendDiag(const char *s) {
+    int n = 0; while (g_diag[n]) ++n;
+    if (n && n < (int)sizeof(g_diag) - 2) g_diag[n++] = ';', g_diag[n++] = ' ';
+    for (int i = 0; s[i] && n < (int)sizeof(g_diag) - 1; ++i) g_diag[n++] = s[i];
+    g_diag[n] = 0;
+}
+
 static double Now(void) {
     return (double)mftb() / (double)PPC_TIMEBASE_FREQ;
 }
 
+/* Sector callbacks handed to fat32.c. `ctx` is always a Vol*. */
+static int VolRead(void *ctx, uint32_t lba, uint32_t count, void *buf) {
+    Vol *v = (Vol *)ctx;
+    if (!v || !v->used) return 0;
+    if (v->is_usb)
+        return USBStorage_Read_Sectors(v->dev, (unsigned)lba, (unsigned)count, buf) ? 1 : 0;
+    return xenon_ata_read_sectors(lba, count, buf) ? 1 : 0;
+}
+
+static int VolWrite(void *ctx, uint32_t lba, uint32_t count, const void *buf) {
+    Vol *v = (Vol *)ctx;
+    if (!v || !v->used || !v->writable) return 0;
+    if (v->is_usb)
+        return USBStorage_Write_Sectors(v->dev, (unsigned)lba, (unsigned)count, buf) ? 1 : 0;
+    return xenon_ata_write_sectors((unsigned long long)lba, (int)count, buf) ? 1 : 0;
+}
+
+static void PollBuses(void) {
+    for (int i = 0; i < usb_buscnt; ++i) {
+        usbbus_t *b = usb_buses[i];
+        if (b) { usb_poll(b); usb_daemon(b); }
+    }
+}
+
+/* --- mount helpers ------------------------------------------------------ */
+
+/* Mounts each USB mass-storage device as its own volume. Returns how many were
+ * added. `tick` may be NULL. */
+static void ProbeKeys(void);
+
+static int MountUSB(int (*tick)(void *ctx, const char *status), void *ctx) {
+    SetStatus("initialising USB");
+    usb_init();
+
+    double deadline = Now() + 6.0;
+    int found = 0;
+    g_dev_count = 0;
+    while (Now() < deadline) {
+        if (tick && !tick(ctx, "searching for a USB drive")) break;
+        usb_do_poll();
+        g_dev_count = 0;
+        for (int d = 0; d < 8; ++d) {
+            unsigned int ss = 0;
+            int cap = USBStorage_Get_Capacity(d, &ss);
+            if (cap > 0 && ss == 512u) { ++g_dev_count; found = 1; }
+        }
+        if (found) break;
+        double t0 = Now();
+        while (Now() - t0 < 0.1) usb_do_poll();
+    }
+
+    if (!found) return 0;
+
+    int added = 0;
+    for (int d = 0; d < 8 && g_vol_count < FS_MAX_VOLUMES; ++d) {
+        unsigned int ss = 0;
+        int cap = USBStorage_Get_Capacity(d, &ss);
+        if (cap <= 0 || ss != 512u) continue;
+
+        Vol *v = &g_vols[g_vol_count];
+        memset(v, 0, sizeof(*v));
+        v->used = 1;
+        v->is_usb = 1;
+        v->dev = d;
+        v->writable = 1; /* USBStorage_Write_Sectors is available */
+        v->type = "USB";
+        v->label = "usb";
+        v->fs = Fat32_Open(VolRead, VolWrite, v);
+        if (!v->fs) { v->used = 0; continue; }
+        if (tick) tick(ctx, "mounting USB FAT32 volume");
+        if (!Fat32_MountVolume(v->fs)) {
+            Fat32FsType t = Fat32_Probe(VolRead, v);
+            char m[64];
+            snprintf(m, sizeof(m), "USB%d: not FAT32 (type %d)", d, (int)t);
+            AppendDiag(m);
+            Fat32_Close(v->fs);
+            v->used = 0;
+            continue;
+        }
+        ++g_vol_count;
+        ++added;
+    }
+    return added;
+}
+
+/* Mounts the internal HDD if it holds a FAT32 volume. Returns 1 if added. */
+static int MountHDD(int (*tick)(void *ctx, const char *status), void *ctx) {
+    int first = !g_have_ata;
+    g_have_ata = 1;
+    if (tick && first) tick(ctx, "probing internal HDD");
+
+    if (xenon_ata_init() != 0) {
+        if (first) AppendDiag("HDD: no ATA device");
+        return 0;
+    }
+
+    if (g_vol_count >= FS_MAX_VOLUMES) return 0;
+
+    Vol *v = &g_vols[g_vol_count];
+    memset(v, 0, sizeof(*v));
+    v->used = 1;
+    v->is_usb = 0;
+    v->dev = -1;
+    v->writable = 1;
+    v->type = "HDD";
+    v->label = "hdd";
+
+    Fat32FsType t = Fat32_Probe(VolRead, v);
+    g_ata_type = (int)t;
+    if (t != FAT32_FS_FAT32) {
+        const char *nm = (t == FAT32_FS_FATX) ? "FATX (unsupported)"
+                       : (t == FAT32_FS_FAT16) ? "FAT16 (unsupported)"
+                       : "unknown";
+        char m[80];
+        snprintf(m, sizeof(m), "HDD: %s, read-only use impossible", nm);
+        AppendDiag(m);
+        v->used = 0;
+        return 0;
+    }
+
+    v->fs = Fat32_Open(VolRead, VolWrite, v);
+    if (!v->fs) { v->used = 0; return 0; }
+    if (tick) tick(ctx, "mounting HDD FAT32 volume");
+    if (!Fat32_MountVolume(v->fs)) {
+        AppendDiag("HDD: FAT32 mount failed");
+        Fat32_Close(v->fs);
+        v->used = 0;
+        return 0;
+    }
+    ++g_vol_count;
+    return 1;
+}
+
+/* Discovers the conventional scan roots on volume 0 and fills g_roms. The walk
+ * in app.cpp always starts at the volume root, so these are only used for the
+ * informational "Folder:" line and the keys probe. */
+static int DirExistsOn(int vol, const char *path) {
+    return Fs_ListDirOn(vol, path, 0, 0) != -1;
+}
+
+static void ResolveRomsDir(void) {
+    static const char *cands[] = {
+        "roms", "ROMs", "ROMS", "roms/switch", "games", "GAMES", "Games",
+        "switch", "SWITCH", "eden/roms", "Eden/roms", "EDEN/ROMS", "roms/switch"
+    };
+    g_roms[0] = 0;
+    g_scan_root_count = 0;
+    for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]) && g_scan_root_count < FS_MAX_ROOTS; ++i) {
+        int n = 0;
+        const char *c = cands[i];
+        for (; c[n] && n < FS_PATH_MAX - 1; ++n) g_scan_roots[g_scan_root_count][n] = c[n];
+        g_scan_roots[g_scan_root_count][n] = 0;
+        ++g_scan_root_count;
+        if (DirExistsOn(0, c) && !g_roms[0])
+            memcpy(g_roms, g_scan_roots[g_scan_root_count - 1], FS_PATH_MAX);
+    }
+    if (g_scan_root_count < FS_MAX_ROOTS) {
+        g_scan_roots[g_scan_root_count][0] = 0;
+        ++g_scan_root_count;
+    }
+}
+
+int Fs_MountAll(int (*tick)(void *ctx, const char *status), void *ctx) {
+    g_ready = 0;
+    g_vol_count = 0;
+    g_dev_count = 0;
+    g_diag[0] = 0;
+    memset(g_vols, 0, sizeof(g_vols));
+
+    if (g_have_ata) {
+        /* ATA already initialised by an earlier call: re-mount without the
+         * potential first-init delay. */
+    }
+
+    int usb = MountUSB(tick, ctx);
+    int hdd = MountHDD(tick, ctx);
+
+    if (g_vol_count <= 0) {
+        g_ready = 0;
+        SetStatus("no FAT32 volume");
+        if (g_dev_count > 0) AppendDiag("USB present but not FAT32");
+        if (!g_diag[0]) SetDiag("no storage");
+        return 0;
+    }
+
+    g_ready = 1;
+    ResolveRomsDir();
+
+    /* The default volume is USB if any USB volume mounted, else the HDD. */
+    int def = 0;
+    for (int i = 0; i < g_vol_count; ++i)
+        if (g_vols[i].is_usb) { def = i; break; }
+    if (def != 0) { Vol t = g_vols[0]; g_vols[0] = g_vols[def]; g_vols[def] = t; }
+    snprintf(g_devtype, sizeof(g_devtype), "%s", g_vols[0].type);
+
+    char buf[96];
+    if (usb && hdd)      snprintf(buf, sizeof(buf), "USB + HDD ready (%d vol)", g_vol_count);
+    else if (hdd)        snprintf(buf, sizeof(buf), "HDD FAT32 ready");
+    else                 snprintf(buf, sizeof(buf), "USB FAT32 ready (%d dev%s)",
+                                  g_dev_count, g_dev_count == 1 ? "" : "s");
+    SetStatus(buf);
+    ProbeKeys();
+    return g_vol_count;
+}
+
+int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
+    return Fs_MountAll(tick, ctx) > 0 ? 1 : 0;
+}
+
 int Fs_EnsureMounted(void) {
     if (g_ready) return 1;
-    Fs_Mount(0, 0);
+    Fs_MountAll(0, 0);
     return g_ready;
 }
 
@@ -81,20 +317,185 @@ int Fs_Ready(void) { return g_ready; }
 const char *Fs_RomsDir(void) { return g_roms; }
 const char *Fs_Status(void) { return g_status[0] ? g_status : "not mounted"; }
 int Fs_DeviceCount(void) { return g_dev_count; }
-uint64_t Fs_VolumeSize(void) { return g_vol_size; }
+uint64_t Fs_VolumeSize(void) { return g_ready ? Fat32_TotalBytes(g_vols[0].fs) : 0; }
 int Fs_KeyCount(void) { return g_keys; }
 const char *Fs_KeysStatus(void) {
     return g_keys_status[0] ? g_keys_status : "prod.keys: not checked";
 }
 
+/* --- volume accessors --------------------------------------------------- */
+
+int Fs_VolumeCount(void) { return g_vol_count; }
+
+const char *Fs_VolumeType(int vol) {
+    if (vol < 0 || vol >= g_vol_count) return "";
+    return g_vols[vol].type;
+}
+
+const char *Fs_VolumeLabel(int vol) {
+    if (vol < 0 || vol >= g_vol_count) return "";
+    return g_vols[vol].label;
+}
+
+int Fs_VolumeWritable(int vol) {
+    if (vol < 0 || vol >= g_vol_count) return 0;
+    return g_vols[vol].writable && Fat32_IsWritable(g_vols[vol].fs);
+}
+
+uint64_t Fs_VolumeTotal(int vol) {
+    if (vol < 0 || vol >= g_vol_count) return 0;
+    return Fat32_TotalBytes(g_vols[vol].fs);
+}
+
+uint64_t Fs_VolumeFree(int vol) {
+    if (vol < 0 || vol >= g_vol_count) return 0;
+    return Fat32_FreeBytes(g_vols[vol].fs);
+}
+
+static int CiEqStr(const char *a, const char *b) {
+    for (;;) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (ca != cb) return 0;
+        if (!ca) return 1;
+        ++a; ++b;
+    }
+}
+
+int Fs_VolumeByType(const char *type) {
+    if (!type) return -1;
+    for (int i = 0; i < g_vol_count; ++i)
+        if (CiEqStr(g_vols[i].type, type)) return i;
+    return -1;
+}
+
+int Fs_VolumeByLabel(const char *label) {
+    if (!label) return -1;
+    for (int i = 0; i < g_vol_count; ++i)
+        if (CiEqStr(g_vols[i].label, label)) return i;
+    return -1;
+}
+
+const char *Fs_VolumesSummary(void) {
+    static char s[160];
+    int off = 0;
+    s[0] = 0;
+    if (!g_ready) { snprintf(s, sizeof(s), "(none)"); return s; }
+    for (int i = 0; i < g_vol_count && off < (int)sizeof(s) - 24; ++i) {
+        uint64_t gb10 = Fs_VolumeTotal(i) * 10u / (1024ull * 1024ull * 1024ull);
+        int w = snprintf(s + off, sizeof(s) - off, "%s%s:%llu.%lluGB%s",
+                         i ? " " : "", g_vols[i].type,
+                         (unsigned long long)(gb10 / 10),
+                         (unsigned long long)(gb10 % 10),
+                         g_vols[i].writable ? "" : "r/o");
+        if (w <= 0) break;
+        off += w;
+    }
+    return s;
+}
+
+/* --- per-volume operations --------------------------------------------- */
+
+long Fs_ListDirOn(int vol, const char *path, FsDirFn fn, void *ctx) {
+    if (vol < 0 || vol >= g_vol_count) return -1;
+    if (!path) path = "";
+    return Fat32V_ListDir(g_vols[vol].fs, path, fn ? (Fat32DirFn)fn : 0, ctx);
+}
+
+long Fs_ReadFileOn(int vol, const char *path, void *buf, uint32_t max) {
+    if (vol < 0 || vol >= g_vol_count || !path) return -1;
+    return Fat32V_ReadFile(g_vols[vol].fs, path, buf, max);
+}
+
+int Fs_ExistsOn(int vol, const char *path, int *is_dir) {
+    if (vol < 0 || vol >= g_vol_count || !path) return 0;
+    uint32_t sz = 0;
+    int dir = 0;
+    int r = Fat32V_Stat(g_vols[vol].fs, path, &sz, &dir);
+    if (r && is_dir) *is_dir = dir;
+    return r;
+}
+
+int Fs_MkdirOn(int vol, const char *path) {
+    if (vol < 0 || vol >= g_vol_count || !path) return 0;
+    return Fat32V_Mkdir(g_vols[vol].fs, path);
+}
+
+int Fs_MkdirsOn(int vol, const char *path) {
+    if (vol < 0 || vol >= g_vol_count || !path || !path[0]) return 0;
+    char tmp[FS_PATH_MAX];
+    int n = 0;
+    for (; path[n] && n < FS_PATH_MAX - 1; ++n) tmp[n] = path[n];
+    tmp[n] = 0;
+
+    /* Strip a leading slash: paths are volume-relative. */
+    char *p = tmp;
+    while (*p == '/') ++p;
+
+    for (char *q = p; ; ++q) {
+        if (*q == '/' || *q == 0) {
+            char save = *q;
+            *q = 0;
+            if (p[0]) {
+                if (!Fat32V_Exists(g_vols[vol].fs, p) && !Fat32V_Mkdir(g_vols[vol].fs, p))
+                    return 0;
+            }
+            *q = save;
+            if (save == 0) break;
+        }
+    }
+    return 1;
+}
+
+/* --- file copy (streaming, verified) ------------------------------------ */
+
+#define FS_COPY_CHUNK 65536
+static unsigned char g_copybuf[FS_COPY_CHUNK];
+
+int Fs_CopyFileOn(int dst_vol, const char *dst_path,
+                  int src_vol, const char *src_path,
+                  FsCopyProgress cb, void *cbctx, uint64_t *out_bytes) {
+    if (dst_vol < 0 || dst_vol >= g_vol_count || !dst_path) return 0;
+    if (src_vol < 0 || src_vol >= g_vol_count || !src_path) return 0;
+    if (!Fs_VolumeWritable(dst_vol)) return 0;
+
+    uint32_t size = 0;
+    Fat32Reader *r = Fat32Reader_Open(g_vols[src_vol].fs, src_path, &size);
+    if (!r) return 0;
+
+    Fat32File *f = Fat32File_Create(g_vols[dst_vol].fs, dst_path);
+    if (!f) { Fat32Reader_Close(r); return 0; }
+
+    uint64_t done = 0;
+    int ok = 1;
+    for (;;) {
+        long got = Fat32Reader_Read(r, g_copybuf, FS_COPY_CHUNK);
+        if (got < 0) { ok = 0; break; }
+        if (got == 0) break;
+        if (!Fat32File_Write(f, g_copybuf, (uint32_t)got)) { ok = 0; break; }
+        done += (uint64_t)got;
+        if (cb && !cb(cbctx, done, size)) { ok = 0; break; }
+    }
+    Fat32Reader_Close(r);
+
+    if (!ok) { Fat32File_Abort(f); return 0; }
+    if (!Fat32File_Finish(f)) return 0;
+
+    /* Verify the copied byte count. */
+    uint32_t wsz = 0;
+    if (!Fat32V_Stat(g_vols[dst_vol].fs, dst_path, &wsz, 0) || wsz != size) return 0;
+    if (out_bytes) *out_bytes = (uint64_t)size;
+    return 1;
+}
+
+/* --- legacy single-volume wrappers -------------------------------------- */
+
 long Fs_ListDir(const char *path, FsDirFn fn, void *ctx) {
-    if (!g_ready) return -1;
-    return Fat32_ListDir(path, (Fat32DirFn)fn, ctx);
+    return Fs_ListDirOn(0, path, fn, ctx);
 }
 
 long Fs_ReadFile(const char *path, void *buf, uint32_t max) {
-    if (!g_ready) return -1;
-    return Fat32_ReadFile(path, buf, max);
+    return Fs_ReadFileOn(0, path, buf, max);
 }
 
 /* Sets the keys status string. */
@@ -132,7 +533,7 @@ static int CountKeyEntries(const unsigned char *b, long n) {
 }
 
 /* Short summary of the volume root (first few names) for on-screen
- * diagnostics. fat32.c keeps its state in globals, so directory listings are
+ * diagnostics. fat32.c keeps its state per volume, so directory listings are
  * never nested: each listing is collected fully before the next begins. */
 #define FS_ROOT_NAMES 8
 static char g_root_summary[160];
@@ -177,7 +578,7 @@ static int NameListCb(void *ctx, const char *name, uint32_t size, int is_dir) {
 /* Lists `dir` and copies the name of the first `*.keys` file into `out`. */
 static int FindKeysInDir(const char *dir, char *out, int outsz) {
     struct NameListCtx c; c.n = 0;
-    if (Fs_ListDir(dir, NameListCb, &c) < 0) return 0;
+    if (Fs_ListDirOn(0, dir, NameListCb, &c) < 0) return 0;
     for (int i = 0; i < c.n; ++i) {
         if (!c.is_dir[i] && (CiIsProdKeys(c.names[i]) || CiEndsKeys(c.names[i]))) {
             int k = 0; for (; c.names[i][k] && k < outsz - 1; ++k) out[k] = c.names[i][k];
@@ -201,21 +602,21 @@ static void ProbeKeys(void) {
 
     /* 1) Fast path: known relative locations. */
     for (unsigned i = 0; i < sizeof(cands)/sizeof(cands[0]); ++i) {
-        long n = Fs_ReadFile(cands[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
+        long n = Fs_ReadFileOn(0, cands[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
         if (n > 0) {
             g_keys = CountKeyEntries(g_keybuf, n);
             char buf[80];
             snprintf(buf, sizeof(buf), "prod.keys: %d keys (%s)", g_keys, cands[i]);
             SetKeysStatus(buf);
             snprintf(diag, sizeof(diag), "found prod.keys at %s (%ld bytes)", cands[i], n);
-            SetDiag(diag);
+            AppendDiag(diag);
             return;
         }
     }
 
     /* 2) Enumerate the volume root once. */
     struct NameListCtx root; root.n = 0;
-    Fs_ListDir("", NameListCb, &root);
+    Fs_ListDirOn(0, "", NameListCb, &root);
 
     /* Build the on-screen root summary. */
     {
@@ -233,11 +634,11 @@ static void ProbeKeys(void) {
     /* 3) Look for `*.keys` directly in the root. */
     for (int i = 0; i < root.n; ++i) {
         if (!root.is_dir[i] && (CiIsProdKeys(root.names[i]) || CiEndsKeys(root.names[i]))) {
-            long n = Fs_ReadFile(root.names[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
+            long n = Fs_ReadFileOn(0, root.names[i], g_keybuf, (uint32_t)sizeof(g_keybuf));
             if (n > 0) {
                 g_keys = CountKeyEntries(g_keybuf, n);
                 snprintf(diag, sizeof(diag), "found %s (%ld bytes)", root.names[i], n);
-                SetDiag(diag);
+                AppendDiag(diag);
                 goto done;
             }
         }
@@ -250,11 +651,11 @@ static void ProbeKeys(void) {
         if (FindKeysInDir(root.names[i], file, sizeof(file))) {
             char path[FS_PATH_MAX];
             snprintf(path, sizeof(path), "%s/%s", root.names[i], file);
-            long n = Fs_ReadFile(path, g_keybuf, (uint32_t)sizeof(g_keybuf));
+            long n = Fs_ReadFileOn(0, path, g_keybuf, (uint32_t)sizeof(g_keybuf));
             if (n > 0) {
                 g_keys = CountKeyEntries(g_keybuf, n);
                 snprintf(diag, sizeof(diag), "found %s (%ld bytes)", path, n);
-                SetDiag(diag);
+                AppendDiag(diag);
                 goto done;
             }
         }
@@ -262,7 +663,7 @@ static void ProbeKeys(void) {
 
     SetKeysStatus("prod.keys: not found");
     snprintf(diag, sizeof(diag), "prod.keys not found; root: %s", g_root_summary);
-    SetDiag(diag);
+    AppendDiag(diag);
     return;
 
 done:
@@ -273,100 +674,6 @@ done:
     }
 }
 
-/* Returns 1 if `path` is an existing directory. */
-static int DirExists(const char *path) {
-    return Fat32_ListDir(path, 0, 0) != -1;
-}
-
-int Fs_Mount(int (*tick)(void *ctx, const char *status), void *ctx) {
-    SetStatus("initialising USB");
-    g_ready = 0;
-    g_dev = -1;
-    g_dev_count = 0;
-    g_vol_size = 0;
-    usb_init();
-
-    double deadline = Now() + 6.0;
-    int found = 0;
-    while (Now() < deadline) {
-        if (tick && !tick(ctx, "searching for a USB drive")) return 0;
-        /* Use usb_do_poll() (like the working libXenon example) which also runs USBStorage_Init() */
-        usb_do_poll();
-        /* Count devices and check capacity */
-        g_dev_count = 0;
-        for (int d = 0; d < 8; ++d) {
-            unsigned int ss = 0;
-            int cap = USBStorage_Get_Capacity(d, &ss);
-            if (cap > 0 && ss == 512u) {
-                ++g_dev_count;
-                if (!found) {
-                    g_dev = d;
-                    g_vol_size = (uint64_t)cap * (uint64_t)512u;
-                    found = 1;
-                }
-            }
-        }
-        if (found) break;
-        double t0 = Now();
-        while (Now() - t0 < 0.1) usb_do_poll();
-    }
-
-    if (!found) {
-        if (g_dev_count > 0) {
-            SetStatus("USB device found, not 512-byte sectors");
-            SetDiag("USB device found but sector size != 512");
-        } else {
-            SetStatus("no USB mass-storage device");
-            SetDiag("no USB mass-storage device detected");
-        }
-        return 0;
-    }
-
-    if (tick) tick(ctx, "mounting FAT32 volume");
-    if (!Fat32_Mount(ReadSectors, 0)) {
-        SetStatus("not a FAT32 volume");
-        SetDiag("FAT32 mount failed");
-        return 0;
-    }
-    g_ready = 1;
-    snprintf(g_devtype, sizeof(g_devtype), "USB");
-    SetDiag("mounted via USB");
-
-    static const char *cands[] = {
-        "roms", "ROMs", "ROMS", "roms/switch", "games", "GAMES", "Games",
-        "switch", "SWITCH", "eden/roms", "Eden/roms", "EDEN/ROMS", "roms/switch"
-    };
-    g_roms[0] = 0;
-    g_scan_root_count = 0;
-    /* add common roots even if not all exist - but prefer existing ones; also add root */
-    for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]) && g_scan_root_count < FS_MAX_ROOTS; ++i) {
-        int n = 0;
-        const char *c = cands[i];
-        for (; c[n] && n < FS_PATH_MAX - 1; ++n) g_scan_roots[g_scan_root_count][n] = c[n];
-        g_scan_roots[g_scan_root_count][n] = 0;
-        ++g_scan_root_count;
-        if (DirExists(c) && !g_roms[0]) {
-            memcpy(g_roms, g_scan_roots[g_scan_root_count - 1], FS_PATH_MAX);
-        }
-    }
-    /* always include root as a scan root */
-    if (g_scan_root_count < FS_MAX_ROOTS) {
-        g_scan_roots[g_scan_root_count][0] = 0;
-        ++g_scan_root_count;
-    }
-
-    char buf[96];
-    if (g_roms[0]) {
-        snprintf(buf, sizeof(buf), "USB FAT32 ready (%d dev%s)", g_dev_count,
-                 g_dev_count == 1 ? "" : "s");
-    } else {
-        snprintf(buf, sizeof(buf), "USB ok (%d dev%s), no roms/ folder", g_dev_count,
-                 g_dev_count == 1 ? "" : "s");
-    }
-    SetStatus(buf);
-    ProbeKeys();
-    return 1;
-}
 int Fs_GetScanRoots(const char **roots, int max_roots) {
     int n = 0;
     for (int i = 0; i < g_scan_root_count && i < max_roots; ++i) {
