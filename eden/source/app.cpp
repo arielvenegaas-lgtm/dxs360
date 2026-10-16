@@ -15,9 +15,28 @@ static const char *kMenu[] = { "Library", "System Status", "Settings", "About", 
 #define MENU_N ((int)(sizeof(kMenu) / sizeof(kMenu[0])))
 
 static const char *kSet[] = {
-    "Grid columns", "Show file extensions", "Scan roms on start", "Rescan now", "Back"
+    "Grid columns", "Show file extensions", "Scan roms on start",
+    "Performance (FPS HUD)", "Teleport destination", "Sort games",
+    "Confirm before delete", "Rescan now", "Back"
 };
 #define SET_N ((int)(sizeof(kSet) / sizeof(kSet[0])))
+
+/* Per-game action menu (opened with A in the library / info screen). */
+enum { ACT_PLAY, ACT_INFO, ACT_TELEPORT, ACT_DELETE, ACT_CANCEL, ACT_N };
+
+/* Teleport destination presets (all volume-relative). "HDD" is honoured on
+ * machines whose internal drive is a real FAT32 volume; on a stock 360 the
+ * drive is FATX and unwritable, so the copy lands on the writable volume. */
+static const char *kMoveTargets[] = {
+    "switch/games", "switch", "games", "roms", "eden/games"
+};
+#define MOVE_N ((int)(sizeof(kMoveTargets) / sizeof(kMoveTargets[0])))
+
+const char *App_MoveTargetName(const EdenApp *a) {
+    int i = a ? a->set.move_target : 0;
+    if (i < 0 || i >= MOVE_N) i = 0;
+    return kMoveTargets[i];
+}
 
 static void SetStr(char *dst, int sz, const char *s) {
     int i = 0;
@@ -43,6 +62,41 @@ int App_LibPerPage(const EdenApp *a) {
     int cols = a->set.grid_cols;
     if (cols < 1) cols = 1;
     return cols * App_LibRows(a);
+}
+
+/* Case-insensitive comparison of two titles for sorting. */
+static int TitleLess(const char *a, const char *b) {
+    for (;;) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (ca != cb) return ca < cb;
+        if (!ca) return 0;
+        ++a; ++b;
+    }
+}
+
+/* Stable-ish insertion sort (the library is small and swaps stay local). */
+void App_SortLibrary(EdenApp *a) {
+    int n = a->lib.count;
+    if (n < 2) return;
+    App_ArtFlush(a); /* indices move: drop the cover cache */
+    for (int i = 1; i < n; ++i) {
+        Game key = a->lib.items[i];
+        int j = i - 1;
+        while (j >= 0) {
+            Game *cur = &a->lib.items[j];
+            int after;
+            if (a->set.sort_mode == 1)
+                after = cur->size < key.size;
+            else
+                after = !TitleLess(cur->title[0] ? cur->title : cur->file,
+                                   key.title[0] ? key.title : key.file);
+            if (!after) break;
+            a->lib.items[j + 1] = *cur;
+            --j;
+        }
+        a->lib.items[j + 1] = key;
+    }
 }
 
 void App_ShowMessage(EdenApp *a, const char *text) {
@@ -210,6 +264,7 @@ void App_Rescan(EdenApp *a) {
     }
     /* Walk the whole volume: no particular folder name is required. */
     ScanVolume(a);
+    App_SortLibrary(a);
 
     char buf[96];
     if (a->lib.count > 0) {
@@ -233,6 +288,10 @@ void App_Init(EdenApp *a, GfxContext *gfx) {
     a->set.grid_cols = 4;
     a->set.show_ext = 0;
     a->set.scan_on_start = 1;
+    a->set.fps_hud = 0;
+    a->set.sort_mode = 0;
+    a->set.move_target = 0;
+    a->set.confirm_del = 1;
     Library_Init(&a->lib);
     Nav_Reset();
     a->screen = SCR_HOME;
@@ -247,6 +306,99 @@ void App_Init(EdenApp *a, GfxContext *gfx) {
 }
 
 static void ToggleInt(int *v) { *v = *v ? 0 : 1; }
+
+/* Volume-relative path of a game (dir/file). */
+static void GamePath(const Game *g, char *out, int outsz) {
+    if (g->dir[0]) snprintf(out, outsz, "%s/%s", g->dir, g->file);
+    else           snprintf(out, outsz, "%s", g->file);
+}
+
+/* Opens the per-game action menu for item `idx`. */
+static void OpenActions(EdenApp *a, int idx) {
+    if (a->lib.count <= 0) return;
+    if (idx < 0 || idx >= a->lib.count) return;
+    a->act_idx = idx;
+    a->lib_sel = idx;
+    a->detail_idx = idx;
+    LoadGameMeta(a, &a->lib.items[idx]);
+    a->act_sel = 0;
+    a->act_confirm = 0;
+    a->screen = SCR_ACTIONS;
+}
+
+/* Play: try to actually run the selection through the emucore bridge. The
+ * message it returns is always truthful (standalone NSO runs; a retail NSP
+ * reports exactly what is still missing, e.g. NCA decryption). */
+static void RunGame(EdenApp *a, int idx) {
+    char bootmsg[224];
+    Core_Boot(&a->lib.items[idx], bootmsg, (int)sizeof(bootmsg));
+    App_ShowMessage(a, bootmsg[0] ? bootmsg : Core_WhyNot(&a->lib.items[idx]));
+}
+
+/* Teleport: copy the game into the destination folder (switch/games/ by
+ * default) and remove the source so it is a real move. The internal Xbox 360
+ * HDD is FATX and cannot be written, so the copy lands on the writable volume
+ * (USB) and the chosen folder lives on it. */
+static void ActionTeleport(EdenApp *a) {
+    Game *g = &a->lib.items[a->act_idx];
+    char src[256], dst[256], msg[224];
+    GamePath(g, src, sizeof(src));
+
+    int dstv = Fs_VolumeByType("HDD");
+    if (dstv < 0 || !Fs_VolumeWritable(dstv)) dstv = 0;
+    if (!Fs_VolumeWritable(dstv)) {
+        App_ShowMessage(a, "No writable volume for Teleport.");
+        return;
+    }
+
+    const char *tgt = App_MoveTargetName(a);
+    snprintf(dst, sizeof(dst), "%s/%s", tgt, g->file);
+    if (strcmp(src, dst) == 0) {
+        snprintf(msg, sizeof(msg), "Already in %s/", tgt);
+        App_ShowMessage(a, msg);
+        return;
+    }
+    Fs_MkdirsOn(dstv, tgt);
+
+    uint64_t bytes = 0;
+    if (!Fs_CopyFileOn(dstv, dst, 0, src, 0, 0, &bytes)) {
+        snprintf(msg, sizeof(msg), "Teleport failed (copy to %s/)", tgt);
+        App_ShowMessage(a, msg);
+        return;
+    }
+    int removed = Fs_UnlinkOn(0, src); /* best-effort: complete the move */
+    App_Rescan(a);
+    snprintf(msg, sizeof(msg), "Teleported to %s/ (%.1f MB)%s", tgt,
+             (double)bytes / (1024.0 * 1024.0),
+             removed ? "" : "; source kept");
+    App_ShowMessage(a, msg);
+}
+
+/* Delete: unlink the game from the volume, then rescan. */
+static void ActionDelete(EdenApp *a) {
+    Game *g = &a->lib.items[a->act_idx];
+    char src[256], name[96], msg[224];
+    GamePath(g, src, sizeof(src));
+    SetStr(name, (int)sizeof(name), g->file); /* capture before App_Rescan */
+
+    if (Fs_UnlinkOn(0, src)) {
+        App_Rescan(a);
+        snprintf(msg, sizeof(msg), "Deleted %s", name);
+    } else {
+        snprintf(msg, sizeof(msg), "Delete failed: %s", src);
+    }
+    App_ShowMessage(a, msg);
+}
+
+static void ActivateAction(EdenApp *a, int idx) {
+    switch (idx) {
+    case ACT_PLAY:     RunGame(a, a->act_idx); a->screen = SCR_LIBRARY; break;
+    case ACT_INFO:     a->detail_idx = a->act_idx; a->screen = SCR_DETAIL; break;
+    case ACT_TELEPORT: ActionTeleport(a); a->screen = SCR_LIBRARY; break;
+    case ACT_DELETE:   ActionDelete(a); a->screen = SCR_LIBRARY; break;
+    default:           a->screen = SCR_LIBRARY; break; /* Cancel */
+    }
+}
 
 static void ActivateMenuItem(EdenApp *a, int idx) {
     switch (idx) {
@@ -263,6 +415,15 @@ static void ActivateMenuItem(EdenApp *a, int idx) {
 void App_Update(EdenApp *a, const PadState *pad, float dt) {
     a->time += dt;
     if (a->msg_t > 0.0f) a->msg_t -= dt;
+
+    /* Smoothed FPS for the performance HUD. */
+    a->fps_accum += dt;
+    ++a->fps_frames;
+    if (a->fps_accum >= 0.5f) {
+        a->fps = (float)a->fps_frames / a->fps_accum;
+        a->fps_accum = 0.0f;
+        a->fps_frames = 0;
+    }
 
     Nav nav;
     memset(&nav, 0, sizeof(nav));
@@ -301,11 +462,7 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         if (nav.lb) a->lib_sel = (a->lib_sel + n - per) % n;
         if (nav.rb) a->lib_sel = (a->lib_sel + per) % n;
         a->lib_page = a->lib_sel / per;
-        if (nav.accept) {
-            a->detail_idx = a->lib_sel;
-            if (a->lib.count > 0) LoadGameMeta(a, &a->lib.items[a->detail_idx]);
-            a->screen = SCR_DETAIL;
-        }
+        if (nav.accept) OpenActions(a, a->lib_sel);
         if (nav.back)   a->screen = SCR_HOME;
         break;
     }
@@ -316,14 +473,24 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         if (n > 0) {
             if (nav.lb) { a->lib_sel = (a->lib_sel + n - 1) % n; a->detail_idx = a->lib_sel; LoadGameMeta(a, &a->lib.items[a->detail_idx]); }
             if (nav.rb) { a->lib_sel = (a->lib_sel + 1) % n; a->detail_idx = a->lib_sel; LoadGameMeta(a, &a->lib.items[a->detail_idx]); }
-            if (nav.accept) {
-                /* Try to actually run the selection through the emucore bridge;
-                 * the message it returns is always truthful (see core.cpp). */
-                char bootmsg[224];
-                Core_Boot(&a->lib.items[a->detail_idx], bootmsg, (int)sizeof(bootmsg));
-                App_ShowMessage(a, bootmsg[0] ? bootmsg
-                                              : Core_WhyNot(&a->lib.items[a->detail_idx]));
-            }
+            if (nav.accept) OpenActions(a, a->detail_idx);
+        }
+        break;
+    }
+
+    case SCR_ACTIONS: {
+        if (a->act_confirm) {
+            /* Destructive-action confirmation: A = yes, B = no. */
+            if (nav.accept) { a->act_confirm = 0; ActionDelete(a); a->screen = SCR_LIBRARY; }
+            else if (nav.back || nav.down || nav.up) a->act_confirm = 0;
+            break;
+        }
+        if (nav.up)   a->act_sel = (a->act_sel + ACT_N - 1) % ACT_N;
+        if (nav.down) a->act_sel = (a->act_sel + 1) % ACT_N;
+        if (nav.back) { a->screen = SCR_LIBRARY; break; }
+        if (nav.accept) {
+            if (a->act_sel == ACT_DELETE && a->set.confirm_del) { a->act_confirm = 1; break; }
+            ActivateAction(a, a->act_sel);
         }
         break;
     }
@@ -339,8 +506,22 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         } else if (a->set_sel == 2) {
             if (nav.accept || nav.left || nav.right) ToggleInt(&a->set.scan_on_start);
         } else if (a->set_sel == 3) {
-            if (nav.accept) { App_Rescan(a); App_ShowMessage(a, a->status); }
+            if (nav.accept || nav.left || nav.right) ToggleInt(&a->set.fps_hud);
         } else if (a->set_sel == 4) {
+            if (nav.right || nav.accept) { a->set.move_target = (a->set.move_target + 1) % MOVE_N; }
+            if (nav.left)  { a->set.move_target = (a->set.move_target + MOVE_N - 1) % MOVE_N; }
+        } else if (a->set_sel == 5) {
+            if (nav.accept || nav.left || nav.right) {
+                a->set.sort_mode = a->set.sort_mode ? 0 : 1;
+                App_SortLibrary(a);
+                a->lib_sel = 0;
+                a->lib_page = 0;
+            }
+        } else if (a->set_sel == 6) {
+            if (nav.accept || nav.left || nav.right) ToggleInt(&a->set.confirm_del);
+        } else if (a->set_sel == 7) {
+            if (nav.accept) { App_Rescan(a); App_ShowMessage(a, a->status); }
+        } else if (a->set_sel == 8) {
             if (nav.accept) a->screen = SCR_HOME;
         }
         if (nav.back) a->screen = SCR_HOME;

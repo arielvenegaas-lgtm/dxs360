@@ -477,6 +477,12 @@ int Fs_MkdirOn(int vol, const char *path) {
     return Fat32V_Mkdir(g_vols[vol].fs, path);
 }
 
+int Fs_UnlinkOn(int vol, const char *path) {
+    if (vol < 0 || vol >= g_vol_count || !path || !path[0]) return 0;
+    if (!Fs_VolumeWritable(vol)) return 0;
+    return Fat32V_Unlink(g_vols[vol].fs, path);
+}
+
 int Fs_MkdirsOn(int vol, const char *path) {
     if (vol < 0 || vol >= g_vol_count || !path || !path[0]) return 0;
     char tmp[FS_PATH_MAX];

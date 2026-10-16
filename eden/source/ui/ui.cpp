@@ -170,8 +170,9 @@ static void Header(GfxContext *g, const EdenApp *a, const char *title) {
 static const char *ScreenHint(int s) {
     switch (s) {
     case SCR_HOME:     return "A Select   Start Menu";
-    case SCR_LIBRARY:  return "A Open   B Back   LB/RB Page   Start Menu";
-    case SCR_DETAIL:   return "LB/RB Next game   A Why not?   B Back";
+    case SCR_LIBRARY:  return "A Actions   B Back   LB/RB Page   Start Menu";
+    case SCR_DETAIL:   return "LB/RB Next game   A Actions   B Back";
+    case SCR_ACTIONS:  return "A Select   B Back";
     case SCR_SETTINGS: return "A/Left/Right Change   B Back";
     case SCR_SYSTEM:   return "A Back   B Back";
     case SCR_ABOUT:    return "A Back   B Back";
@@ -485,7 +486,12 @@ static void DrawDetail(GfxContext *g, EdenApp *a) {
     }
     ty += 12 * u;
 
-    Gfx_DrawText(g, tx, ty, 2 * u, COL_WARN, "Status: DETECTED (not bootable)");
+    {
+        int can = Core_CanBoot(gm);
+        Gfx_DrawText(g, tx, ty, 2 * u, can ? COL_GOOD : COL_WARN,
+                     can ? "Status: Ready - press A, then Play to run it."
+                         : "Status: Detected - press A, then Play to attempt it.");
+    }
     ty += 2 * 7 * u + 16 * u;
 
     int bw = (int)a->W - tx - UI_MARGIN;
@@ -493,11 +499,10 @@ static void DrawDetail(GfxContext *g, EdenApp *a) {
     if (ty + bh < (int)a->H - UI_FOOTER_H - UI_MARGIN) {
         Fill(g, tx, ty, bw, bh, COL_PANEL);
         Frame(g, tx, ty, bw, bh, 1, COL_LINE);
-        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u, 2 * u, COL_ACCENT, "What does this mean?");
-        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * 7 * u + 8 * u, 2 * u, COL_TEXT_DIM,
-                     "Eden360 read this file's header to show its real title ID");
-        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * (2 * 7 * u) + 12 * u, 2 * u, COL_TEXT_DIM,
-                     "and contents. Booting games is not implemented in this build.");
+        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u, 2 * u, COL_ACCENT, "What happens when you press Play?");
+        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * 7 * u + 8 * u, 2 * u, COL_TEXT_DIM, "The core really tries: a standalone NSO module runs on the AArch64");
+        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * 7 * u + 8 * u + 2 * 7 * u + 7 * u, 2 * u, COL_TEXT_DIM, "interpreter. A retail NSP/XCI first needs NCA decryption (prod.keys)");
+        Gfx_DrawText(g, tx + 16 * u, ty + 14 * u + 2 * 7 * u + 8 * u + 2 * (2 * 7 * u + 7 * u), 2 * u, COL_TEXT_DIM, "and a Horizon-OS/GPU core, so it reports exactly what is still missing.");
     }
 }
 
@@ -507,31 +512,37 @@ static void DrawSettings(GfxContext *g, EdenApp *a) {
     int y = UI_HEADER_H + 60 * u;
     int w = (int)a->W - 2 * UI_MARGIN;
 
-    Gfx_DrawText(g, x, y, 4 * u, COL_TEXT, "Settings"); y += 4 * 7 * u + 30 * u;
+    Gfx_DrawText(g, x, y, 4 * u, COL_TEXT, "Settings"); y += 4 * 7 * u + 22 * u;
 
     static const char *labels[] = {
-        "Grid columns", "Show file extensions", "Scan roms on start", "Rescan now", "Back"
+        "Grid columns", "Show file extensions", "Scan roms on start",
+        "Performance (FPS HUD)", "Teleport destination", "Sort games",
+        "Confirm before delete", "Rescan now", "Back"
     };
-    int itemH = 60 * u;
-    for (int i = 0; i < 5; ++i) {
+    int itemH = 46 * u;
+    for (int i = 0; i < 9; ++i) {
         int iy = y + i * itemH;
         int sel = (i == a->set_sel);
         if (sel) {
-            Fill(g, x - 12 * u, iy, 8 * u, itemH - 12 * u, COL_ACCENT);
-            Fill(g, x, iy, w, itemH - 12 * u, COL_PANEL_2);
+            Fill(g, x - 12 * u, iy, 8 * u, itemH - 10 * u, COL_ACCENT);
+            Fill(g, x, iy, w, itemH - 10 * u, COL_PANEL_2);
         }
-        Gfx_DrawText(g, x + 18 * u, iy + (itemH - 12 * u - 2 * 7 * u) / 2, 2 * u,
+        Gfx_DrawText(g, x + 18 * u, iy + (itemH - 10 * u - 2 * 7 * u) / 2, 2 * u,
                      sel ? COL_TEXT : COL_TEXT_DIM, labels[i]);
 
         const char *val = "";
-        char vbuf[16];
+        char vbuf[24];
         if (i == 0) { snprintf(vbuf, sizeof(vbuf), "%d", a->set.grid_cols); val = vbuf; }
         else if (i == 1) val = a->set.show_ext ? "On" : "Off";
         else if (i == 2) val = a->set.scan_on_start ? "On" : "Off";
+        else if (i == 3) val = a->set.fps_hud ? "On" : "Off";
+        else if (i == 4) val = App_MoveTargetName(a);
+        else if (i == 5) val = a->set.sort_mode ? "Size" : "Name";
+        else if (i == 6) val = a->set.confirm_del ? "On" : "Off";
 
         if (val[0]) {
             int vx = x + w - 24 * u - TextW(val, 2 * u);
-            Gfx_DrawText(g, vx, iy + (itemH - 12 * u - 2 * 7 * u) / 2, 2 * u,
+            Gfx_DrawText(g, vx, iy + (itemH - 10 * u - 2 * 7 * u) / 2, 2 * u,
                          sel ? COL_ACCENT : COL_TEXT_DIM, val);
         }
     }
@@ -656,6 +667,74 @@ static void DrawMenuOverlay(GfxContext *g, EdenApp *a) {
     }
 }
 
+/* Per-game action menu: a vertical stack of square buttons. */
+static void DrawActions(GfxContext *g, EdenApp *a) {
+    int u = U(a);
+    const Game *gm = (a->act_idx >= 0 && a->act_idx < a->lib.count)
+                   ? &a->lib.items[a->act_idx] : 0;
+
+    int n = 5, rowH = 64 * u;
+    int w = 620 * u;
+    int h = 46 * u + n * rowH + 24 * u;
+    int x = ((int)a->W - w) / 2;
+    int y = ((int)a->H - h) / 2;
+    Fill(g, x, y, w, h, COL_PANEL);
+    Frame(g, x, y, w, h, 2, COL_ACCENT);
+
+    Gfx_DrawText(g, x + 24 * u, y + 20 * u, 3 * u, COL_ACCENT, "Actions");
+    if (gm) {
+        int lx = x + 24 * u + TextW("Actions", 3 * u) + 18 * u;
+        TextClip(g, lx, y + 24 * u, 2 * u, w - (lx - x) - 24 * u,
+                 COL_TEXT_DIM, gm->title[0] ? gm->title : gm->file);
+    }
+
+    static const char *items_l[] = { "Play", "Info", "Teleport to HDD", "Delete game", "Cancel" };
+    int iy = y + 52 * u;
+    int sq = 50 * u;
+    for (int i = 0; i < 5; ++i) {
+        int yy = iy + i * (sq + 12 * u);
+        int sel = (i == a->act_sel);
+        Fill(g, x + 28 * u, yy, sq, sq, sel ? COL_ACCENT : COL_PANEL_2);
+        Frame(g, x + 28 * u, yy, sq, sq, 2, sel ? COL_ACCENT : COL_LINE);
+        char gl[2] = { items_l[i][0], 0 };
+        int gs = 4 * u;
+        TextC(g, x + 28 * u + sq / 2, yy + sq / 2 - 7 * gs / 2, gs,
+              sel ? COL_BG : COL_TEXT, gl);
+        char lbl[80];
+        if (i == 2) snprintf(lbl, sizeof(lbl), "Teleport -> %s/", App_MoveTargetName(a));
+        else        snprintf(lbl, sizeof(lbl), "%s", items_l[i]);
+        Gfx_DrawText(g, x + 28 * u + sq + 22 * u, yy + (sq - 2 * 7 * u) / 2, 2 * u,
+                     sel ? COL_TEXT : COL_TEXT_DIM, lbl);
+    }
+
+    if (a->act_confirm) {
+        int cw = 540 * u, ch = 150 * u;
+        int cx = ((int)a->W - cw) / 2, cy = ((int)a->H - ch) / 2;
+        Fill(g, cx, cy, cw, ch, COL_PANEL_2);
+        Frame(g, cx, cy, cw, ch, 3, COL_BAD);
+        TextC(g, cx + cw / 2, cy + 22 * u, 3 * u, COL_BAD, "Delete this game?");
+        const char *nm = gm ? (gm->title[0] ? gm->title : gm->file) : "";
+        TextC(g, cx + cw / 2, cy + 22 * u + 3 * 7 * u + 12 * u, 2 * u, COL_TEXT_DIM, nm);
+        TextC(g, cx + cw / 2, cy + 22 * u + 3 * 7 * u + 2 * 7 * u + 24 * u, 2 * u,
+              COL_MUTED, "A = Yes    B = No");
+    }
+}
+
+/* FPS HUD: small performance readout drawn under the header. */
+static void DrawFpsHud(GfxContext *g, EdenApp *a) {
+    if (!a->set.fps_hud) return;
+    int u = U(a);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "FPS %.0f", a->fps);
+    int bw = TextW("FPS  0", 2 * u) + 24 * u;
+    int bh = 2 * 7 * u + 16 * u;
+    int bx = (int)a->W - bw - UI_MARGIN;
+    int by = UI_HEADER_H + 14 * u;
+    Fill(g, bx, by, bw, bh, 0xCC101820u);
+    Frame(g, bx, by, bw, bh, 1, COL_GOOD);
+    Gfx_DrawText(g, bx + 12 * u, by + 8 * u, 2 * u, COL_GOOD, buf);
+}
+
 static void DrawMessage(GfxContext *g, EdenApp *a) {
     if (a->msg_t <= 0.0f || !a->msg[0]) return;
     int u = U(a);
@@ -676,6 +755,7 @@ void UI_Draw(EdenApp *a) {
     case SCR_HOME:     Header(g, a, "Home");     DrawHome(g, a); break;
     case SCR_LIBRARY:  Header(g, a, "Game Library"); DrawLibrary(g, a); break;
     case SCR_DETAIL:   Header(g, a, "Game Info"); DrawDetail(g, a); break;
+    case SCR_ACTIONS:  Header(g, a, "Actions");  DrawLibrary(g, a); DrawActions(g, a); break;
     case SCR_SETTINGS: Header(g, a, "Settings"); DrawSettings(g, a); break;
     case SCR_SYSTEM:   Header(g, a, "System Status"); DrawSystem(g, a); break;
     case SCR_ABOUT:    Header(g, a, "About");    DrawAbout(g, a); break;
@@ -683,6 +763,7 @@ void UI_Draw(EdenApp *a) {
     }
 
     if (a->screen != SCR_MENU && a->screen != SCR_ABOUT) DrawMessage(g, a);
+    if (a->set.fps_hud) DrawFpsHud(g, a);
     Footer(g, a);
 }
 

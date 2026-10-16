@@ -124,6 +124,11 @@ int  Fs_MkdirOn(int vol, const char *path);
 /* Creates `path` and every missing parent (mkdir -p). Returns 1 on success. */
 int  Fs_MkdirsOn(int vol, const char *path);
 
+/* Deletes a regular file and frees its clusters. Returns 1 on success, 0 when
+ * `vol` is not mounted, is read-only, or the file does not exist. Destructive:
+ * the caller is responsible for confirming with the user first. */
+int  Fs_UnlinkOn(int vol, const char *path);
+
 /* Progress callback for Fs_CopyFileOn: `done`/`total` are bytes. Return 0 to
  * abort the copy (it is rolled back). May be NULL. */
 typedef int (*FsCopyProgress)(void *ctx, uint64_t done, uint64_t total);
