@@ -185,6 +185,13 @@ static int ticket_sig_info(uint32_t type, uint32_t *sig_size, uint32_t *pad) {
     }
 }
 
+/* Minimum ticket-data length that holds every field the loader reads: issuer
+ * (0x40), title-key block (0x100), the version/type/revision fields and the
+ * rights_id (ending at 0x170) plus account_id (0x174). The ES spec pads
+ * ticket data out to 0x2C0, but real-world NSPs routinely trim the trailing
+ * "unknown" region; requiring the full 0x2C0 would reject valid tickets. */
+#define NCA_TICKET_MIN_DATA 0x174
+
 /* Compute Y, the size of the ticket's signature-data block. */
 static int ticket_prefix(const uint8_t *t, uint64_t size, uint64_t *y) {
     uint32_t ss, pad, raw;
@@ -204,7 +211,7 @@ NcaResult Nca_ParseTicket(const void *ticket, uint64_t size,
 
     if (!t) return NCA_ERR_RANGE;
     if (!ticket_prefix(t, size, &y)) return NCA_ERR_UNSUPPORTED;
-    if (size < y + 0x2C0) return NCA_ERR_TOO_SMALL;
+    if (size < y + NCA_TICKET_MIN_DATA) return NCA_ERR_TOO_SMALL;
 
     if (enc_titlekey) memcpy(enc_titlekey, t + y + 0x40, 0x10);
     if (master_key_rev) *master_key_rev = t[y + 0x145];
@@ -222,7 +229,7 @@ NcaResult Nca_TitleKey(const void *ticket, uint64_t size, const ProdKeys *keys,
 
     if (!t) return NCA_ERR_RANGE;
     if (!ticket_prefix(t, size, &y)) return NCA_ERR_UNSUPPORTED;
-    if (size < y + 0x2C0) return NCA_ERR_TOO_SMALL;
+    if (size < y + NCA_TICKET_MIN_DATA) return NCA_ERR_TOO_SMALL;
 
     key_type = t[y + 0x141];
     rev = t[y + 0x145];

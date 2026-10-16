@@ -12,7 +12,8 @@
  *      - rights-id, AES-CTR with a ticket title key
  *   3. On-disk layout locks (independent of the synthetic builder): the FsEntry
  *      table stride (4 x 0x10 at 0x240) and the ticket signature-data size Y
- *      for RSA-4096/2048, ECDSA (full 0x40 pad) and big-endian type encodings.
+ *      for RSA-4096/2048, ECDSA (full 0x40 pad) and big-endian type encodings,
+ *      including a trimmed (0x180-byte) ticket_data as shipped in real NSPs.
  *
  * Build (from the repo root):
  *   gcc -std=c99 -Wall -Wextra -I emucore/crypto -I emucore/loader \
@@ -392,6 +393,18 @@ static void test_ticket_layout(void) {
     for (i = 0; i < 16; i++) tik[0x140 + 0x160 + i] = (uint8_t)(0x10 + i);
     CHECK(Nca_ParseTicket(tik, sizeof(tik), NULL, NULL, rid) == NCA_OK, "ticket RSA2048 parse");
     CHECK(rid[0] == 0x10 && rid[15] == 0x1F, "ticket RSA2048 rights id");
+
+    /* Real NSPs trim ticket_data to 0x180 bytes: only the trailing "unknown"
+     * region is dropped, so every field the loader reads is still present. A
+     * ticket of exactly Y + 0x180 = 0x2C0 bytes must parse, while one byte short
+     * of the minimum must still be rejected (keeps the check non-vacuous). */
+    memset(tik, 0, sizeof(tik));
+    put32(tik, 0x010004);                                /* RSA-2048 LE: Y = 0x140 */
+    tik[0x140 + 0x141] = 0;                              /* common title key */
+    for (i = 0; i < 16; i++) tik[0x140 + 0x160 + i] = (uint8_t)(0x30 + i);
+    CHECK(Nca_ParseTicket(tik, 0x140 + 0x180, NULL, NULL, rid) == NCA_OK, "ticket trimmed data parse");
+    CHECK(rid[0] == 0x30 && rid[15] == 0x3F, "ticket trimmed rights id");
+    CHECK(Nca_ParseTicket(tik, 0x140 + 0x173, NULL, NULL, rid) == NCA_ERR_TOO_SMALL, "ticket short data rejected");
 
     memset(tik, 0, sizeof(tik));
     put32(tik, 0x010002);                                /* ECDSA: Y = 0x80 */
