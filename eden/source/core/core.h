@@ -20,17 +20,22 @@ const char *Core_BackendName(void);
 /* One-line status for the About screen / status panel. */
 const char *Core_StatusLine(void);
 
-/* Lifecycle. Core_Init is a no-op today; it exists so a real core can start
- * subsystems without the UI changing. Core_IsActive is always 0 for now. */
+/* Lifecycle. Core_Init brings up the emucore bridge (guest RAM + interpreter);
+ * Core_IsActive reflects whether that succeeded. */
 void Core_Init(void);
 void Core_Shutdown(void);
 int  Core_IsActive(void);
 
-/* Whether this build can boot `g`. Always 0 for now. */
+/* Whether this build can run `g` as a standalone module (NSO). */
 int Core_CanBoot(const Game *g);
 
 /* Human-readable reason a title cannot be booted. */
 const char *Core_WhyNot(const Game *g);
+
+/* Attempt to boot `g` through the emucore bridge. Fills `msg` (size `msg_sz`)
+ * with a truthful outcome and returns 1 if it ran guest code, else 0. Reads the
+ * file from the mounted volume itself (see filesystem/fs.h). */
+int Core_Boot(const Game *g, char *msg, int msg_sz);
 
 /* ---- capability model -------------------------------------------------- */
 

@@ -23,7 +23,11 @@ const char *Pfs0_ResultName(Pfs0Result r) {
 }
 
 Pfs0Result Pfs0_Parse(Pfs0 *p, const void *data, uint64_t size) {
-    const uint8_t *d = (const uint8_t *)data;
+    return Pfs0_ParseEx(p, data, size, size);
+}
+
+Pfs0Result Pfs0_ParseEx(Pfs0 *p, const void *hdr, uint64_t hdr_len, uint64_t file_size) {
+    const uint8_t *d = (const uint8_t *)hdr;
     uint32_t count, strtab;
     uint64_t header_size;
     uint32_t i;
@@ -31,9 +35,9 @@ Pfs0Result Pfs0_Parse(Pfs0 *p, const void *data, uint64_t size) {
 
     memset(p, 0, sizeof(*p));
     p->data = d;
-    p->size = size;
+    p->size = file_size;
 
-    if (size < 0x10) return PFS0_ERR_TOO_SMALL;
+    if (hdr_len < 0x10) return PFS0_ERR_TOO_SMALL;
     if (d[0] != 'P' || d[1] != 'F' || d[2] != 'S' || d[3] != '0') return PFS0_ERR_BAD_MAGIC;
 
     count  = RdU32(d + 4);
@@ -41,7 +45,7 @@ Pfs0Result Pfs0_Parse(Pfs0 *p, const void *data, uint64_t size) {
     if (count > PFS0_MAX_FILES) return PFS0_ERR_TOO_MANY;
 
     header_size = (uint64_t)0x10 + (uint64_t)count * 0x18u + (uint64_t)strtab;
-    if (header_size > size) return PFS0_ERR_TOO_SMALL;
+    if (header_size > hdr_len) return PFS0_ERR_TOO_SMALL; /* need a larger buffer */
 
     p->count = count;
     p->strtab_size = strtab;
@@ -54,8 +58,9 @@ Pfs0Result Pfs0_Parse(Pfs0 *p, const void *data, uint64_t size) {
         uint64_t sz = RdU64(e + 8);
         uint64_t abs = header_size + off;
 
-        if (off < header_size || off > size || sz > size - off) abs_ok = 0;
-        if (off > size || abs < off /*overflow*/ || abs > size || sz > size - abs) rel_ok = 0;
+        if (off < header_size || off > file_size || sz > file_size - off) abs_ok = 0;
+        if (off > file_size || abs < off /*overflow*/ || abs > file_size ||
+            (file_size - abs) < sz) rel_ok = 0;
     }
     if (abs_ok) {
         p->relative = 0;

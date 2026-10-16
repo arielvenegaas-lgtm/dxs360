@@ -311,7 +311,14 @@ void App_Update(EdenApp *a, const PadState *pad, float dt) {
         if (n > 0) {
             if (nav.lb) { a->lib_sel = (a->lib_sel + n - 1) % n; a->detail_idx = a->lib_sel; LoadGameMeta(a, &a->lib.items[a->detail_idx]); }
             if (nav.rb) { a->lib_sel = (a->lib_sel + 1) % n; a->detail_idx = a->lib_sel; LoadGameMeta(a, &a->lib.items[a->detail_idx]); }
-            if (nav.accept) App_ShowMessage(a, Core_WhyNot(&a->lib.items[a->detail_idx]));
+            if (nav.accept) {
+                /* Try to actually run the selection through the emucore bridge;
+                 * the message it returns is always truthful (see core.cpp). */
+                char bootmsg[224];
+                Core_Boot(&a->lib.items[a->detail_idx], bootmsg, (int)sizeof(bootmsg));
+                App_ShowMessage(a, bootmsg[0] ? bootmsg
+                                              : Core_WhyNot(&a->lib.items[a->detail_idx]));
+            }
         }
         break;
     }

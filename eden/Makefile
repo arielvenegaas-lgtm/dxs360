@@ -49,13 +49,21 @@ ifneq ($(BUILD),$(notdir $(CURDIR)))
 
 export OUTPUT   := $(CURDIR)/$(TARGET)
 
+# Portable emulation modules (plain C99, no libXenon dependency) live at the
+# repository root. Exported so the sub-make compiles them from an absolute path.
+export EMUCORE  := $(CURDIR)/../emucore
+
 export VPATH    := $(CURDIR)/source:$(CURDIR)/source/ui:$(CURDIR)/source/input:$(CURDIR)/source/game:$(CURDIR)/source/filesystem:$(CURDIR)/source/core:$(CURDIR)/../xenon/source:$(CURDIR)/../src
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 
-# eden modules + the reused libXenon layers (gfx, input) and shared FAT32.
-export OFILES   := main.o app.o ui.o nav.o library.o fs.o core.o loader.o artwork.o img.o gfx.o input.o fat32.o regskip.o
+# eden modules + the reused libXenon layers (gfx, input) and shared FAT32, plus
+# the emucore bridge (emucore.o/a64_test_entry.o) and the portable core objects
+# (emu_*.o; uniquely named so they never collide with the frontend's loader.o).
+export OFILES   := main.o app.o ui.o nav.o library.o fs.o core.o loader.o artwork.o img.o gfx.o input.o fat32.o regskip.o \
+                   emucore.o a64_test_entry.o \
+                   emu_a64.o emu_a64_mem.o emu_hle.o emu_pfs0.o emu_nso.o emu_loader.o
 
-export INCLUDE  := -I$(CURDIR)/source -I$(CURDIR)/source/ui -I$(CURDIR)/source/input -I$(CURDIR)/source/game -I$(CURDIR)/source/filesystem -I$(CURDIR)/source/core -I$(CURDIR)/../src -I$(CURDIR)/../xenon/source -I$(CURDIR)/$(BUILD) -I$(LIBXENON_INC)
+export INCLUDE  := -I$(CURDIR)/source -I$(CURDIR)/source/ui -I$(CURDIR)/source/input -I$(CURDIR)/source/game -I$(CURDIR)/source/filesystem -I$(CURDIR)/source/core -I$(CURDIR)/../src -I$(CURDIR)/../xenon/source -I$(CURDIR)/$(BUILD) -I$(LIBXENON_INC) -I$(EMUCORE) -I$(EMUCORE)/a64 -I$(EMUCORE)/hle -I$(EMUCORE)/loader
 export LIBPATHS := -L$(LIBXENON_LIB)
 
 export LD       := $(CXX)
@@ -76,8 +84,9 @@ a64ppc:
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/loader -c $(CURDIR)/../emucore/loader/pfs0.c -o /tmp/pfs0_ppc.o
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/loader -c $(CURDIR)/../emucore/loader/nso.c -o /tmp/nso_ppc.o
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/loader -c $(CURDIR)/../emucore/loader/loader.c -o /tmp/loader_ppc.o
-	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/../emucore/a64 -c $(CURDIR)/source/a64_test_entry.c -o /tmp/a64_test_entry_ppc.o
-	@echo "a64 PPC compile OK (interpreter, guest memory, HLE bridge, PFS0/NSO loader, deterministic entry point)"
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/source -c $(CURDIR)/source/a64_test_entry.c -o /tmp/a64_test_entry_ppc.o
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) -I$(CURDIR)/source -I$(CURDIR)/../emucore -I$(CURDIR)/../emucore/a64 -I$(CURDIR)/../emucore/hle -I$(CURDIR)/../emucore/loader -c $(CURDIR)/source/core/emucore.c -o /tmp/emucore_ppc.o
+	@echo "a64 PPC compile OK (interpreter, guest memory, HLE bridge, PFS0/NSO loader, bridge, deterministic entry point)"
 
 clean:
 	@echo clean ...
@@ -87,6 +96,24 @@ else
 #---------------------------------------------------------------------------------
 
 DEPENDS := $(OFILES:.o=.d)
+
+# Portable emucore objects. Targets are relative to the build directory; the
+# sources come from the exported absolute $(EMUCORE). They are compiled with the
+# same flags as the rest of the frontend (libXenon PPC toolchain) but need no
+# libXenon headers, so their include paths are spelled out explicitly.
+EMUCORE_INC := -I$(EMUCORE) -I$(EMUCORE)/a64 -I$(EMUCORE)/hle -I$(EMUCORE)/loader
+emu_a64.o: $(EMUCORE)/a64/a64.c
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
+emu_a64_mem.o: $(EMUCORE)/a64/a64_mem.c
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
+emu_hle.o: $(EMUCORE)/hle/hle.c
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
+emu_pfs0.o: $(EMUCORE)/loader/pfs0.c
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
+emu_nso.o: $(EMUCORE)/loader/nso.c
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
+emu_loader.o: $(EMUCORE)/loader/loader.c
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
 
 #---------------------------------------------------------------------------------
 $(OUTPUT).elf32: $(OUTPUT).elf

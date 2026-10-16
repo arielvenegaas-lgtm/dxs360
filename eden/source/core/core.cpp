@@ -1,42 +1,121 @@
-/* core.cpp: see core.h. Honest stubs + a truthful capability/feasibility model.
+/* core.cpp: the Eden360 core interface, backed by the emucore/a64 bridge.
  *
- * No CPU, GPU, memory, audio or firmware emulation exists in this build. The
- * tables below exist so the UI can show, plainly, what is and is not done.
+ * This is no longer a pure stub: Core_Init() brings up guest RAM, the AArch64
+ * interpreter, the HLE bridge and the PFS0/NSO loaders (emucore.c), and runs a
+ * deterministic interpreter self-test. Core_CanBoot() is honest about the one
+ * thing that can actually run today - a standalone NSO image - while a retail
+ * NSP is parsed (container listing) but not booted, because NCA decryption
+ * needs prod.keys and correct content. Nothing here fakes success.
  */
+#include <stdio.h>
+#include <string.h>
+
 #include "core.h"
+#include "emucore.h"
+#include "fs.h"
 
-/* ---- identity / status ------------------------------------------------- */
+static int g_selftest_fails = -1; /* -1 = not run yet */
 
-const char *Core_BackendName(void) {
-    return "none (frontend build)";
-}
+const char *Core_BackendName(void) { return EmuCore_BackendName(); }
 
 const char *Core_StatusLine(void) {
-    return "Emulation core not implemented - library browsing only";
+    static char line[224];
+    if (g_selftest_fails == 0)
+        snprintf(line, sizeof(line), "%s; interpreter self-test: pass",
+                 EmuCore_StatusLine());
+    else if (g_selftest_fails > 0)
+        snprintf(line, sizeof(line), "%s; interpreter self-test FAILED (%d: %s)",
+                 EmuCore_StatusLine(), g_selftest_fails, EmuCore_SelfTestReport());
+    else
+        snprintf(line, sizeof(line), "%s", EmuCore_StatusLine());
+    return line;
 }
 
-void Core_Init(void)     { /* no subsystems to start yet */ }
-void Core_Shutdown(void) { /* nothing to tear down        */ }
-int  Core_IsActive(void) { return 0; }
+void Core_Init(void) {
+    EmuCore_Init();
+    g_selftest_fails = EmuCore_SelfTest();
+}
+
+void Core_Shutdown(void) { /* nothing to tear down */ }
+
+int Core_IsActive(void) { return EmuCore_Active(); }
 
 int Core_CanBoot(const Game *g) {
-    (void)g;
-    return 0; /* nothing is bootable in this milestone */
+    return g && g->container == CONT_NSO;
 }
 
 const char *Core_WhyNot(const Game *g) {
-    (void)g;
-    return "This build only browses game files; it does not emulate the console.";
+    if (!g) return "No title selected.";
+    switch (g->container) {
+    case CONT_NSO:
+        return "Standalone module: press A to load and run it on the interpreter.";
+    case CONT_NSP:
+        return "NSP container: the file list can be read, but NCAs need prod.keys to decrypt.";
+    case CONT_NRO:
+        return "NRO homebrew: the interpreter is wired, but only NSO images load today.";
+    default:
+        return "Unrecognised container: nothing to run.";
+    }
+}
+
+/* Reads a file and runs it through the bridge. Kept small and bounded so a
+ * huge container can never exhaust the console's RAM. */
+int Core_Boot(const Game *g, char *msg, int msg_sz) {
+    char path[200];
+    if (!msg || msg_sz <= 0) return 0;
+    msg[0] = '\0';
+    if (!g) { snprintf(msg, msg_sz, "No title selected."); return 0; }
+
+    if (g->dir[0]) snprintf(path, sizeof(path), "%s/%s", g->dir, g->file);
+    else           snprintf(path, sizeof(path), "%s", g->file);
+
+    if (!Fs_Ready()) { snprintf(msg, msg_sz, "Storage is not mounted."); return 0; }
+    EmuCore_Init();
+
+    if (g->container == CONT_NSO) {
+        static uint8_t buf[4u * 1024u * 1024u];
+        long n = Fs_ReadFile(path, buf, (uint32_t)sizeof(buf));
+        if (n <= 0) { snprintf(msg, msg_sz, "Cannot read %s", g->file); return 0; }
+        if (!EmuCore_LoadNso(buf, (unsigned long)n)) {
+            snprintf(msg, msg_sz,
+                     "NSO load failed: bad/unsupported header or outside guest RAM");
+            return 0;
+        }
+        int stopped = EmuCore_RunSlice(2000000u);
+        snprintf(msg, msg_sz, "Ran NSO: entry=0x%08x insns=%u -> %s",
+                 (unsigned)EmuCore_Entry(), (unsigned)EmuCore_InstrCount(),
+                 stopped ? EmuCore_HaltName() : "budget reached, still running");
+        return 1;
+    }
+
+    if (g->container == CONT_NSP) {
+        static uint8_t hdr[65536];
+        long n = Fs_ReadFile(path, hdr, (uint32_t)sizeof(hdr));
+        if (n <= 0) { snprintf(msg, msg_sz, "Cannot read %s", g->file); return 0; }
+        const char *reason = 0;
+        int cnt = EmuCore_ProbePfs0(hdr, (unsigned long)n,
+                                    (unsigned long long)g->size, &reason);
+        if (cnt < 0) {
+            snprintf(msg, msg_sz, "NSP parse failed: %s", reason ? reason : "unknown");
+            return 0;
+        }
+        snprintf(msg, msg_sz,
+                 "NSP: %d file(s). NCA decryption requires prod.keys; not booted.", cnt);
+        return 0;
+    }
+
+    snprintf(msg, msg_sz, "%s", Core_WhyNot(g));
+    return 0;
 }
 
 /* ---- capability model -------------------------------------------------- */
 
 static const CoreCapability kCaps[CAP_COUNT] = {
-    { "CPU",      CAPSTATE_NONE,    "No PowerPC/ARM execution; nothing is interpreted or JITed." },
+    { "CPU",      CAPSTATE_PARTIAL, "AArch64 interpreter (emucore/a64): integer/logic/move/branch/load-store." },
     { "GPU",      CAPSTATE_NONE,    "No Tegra/Maxwell GPU emulation; only the 2D UI framebuffer." },
-    { "Memory",   CAPSTATE_STUB,    "Guest memory map is described, but no guest RAM is allocated." },
-    { "Firmware", CAPSTATE_NONE,    "No Horizon OS, services or sysmodules (no boot0/HOS)." },
-    { "Loader",   CAPSTATE_PARTIAL, "Real container/module headers are decoded; no code is run." },
+    { "Memory",   CAPSTATE_PARTIAL, "64 MB guest RAM provisioned; bounds-checked, faults are reported." },
+    { "Firmware", CAPSTATE_NONE,    "No Horizon OS/services; SVCs dispatch to an empty HLE registry." },
+    { "Loader",   CAPSTATE_PARTIAL, "PFS0 + NSO parsed and loaded; NCA decryption needs prod.keys." },
     { "Audio",    CAPSTATE_NONE,    "No audio output at all." },
 };
 
@@ -74,6 +153,7 @@ const CoreRequirement *Core_RequirementAt(int i) {
 }
 
 const char *Core_Feasibility(void) {
-    return "Full Switch emulation is not feasible here: 3 PowerPC cores and "
-           "512 MB RAM versus 8 ARM cores and 4 GB. Eden stays a browser.";
+    return "A partial AArch64 interpreter now runs, but full Switch emulation "
+           "is still not feasible here: 3 PowerPC cores and 512 MB RAM versus "
+           "8 ARM cores and 4 GB, plus no GPU/OS.";
 }

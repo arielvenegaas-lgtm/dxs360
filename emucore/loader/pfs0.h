@@ -49,6 +49,13 @@ const char *Pfs0_ResultName(Pfs0Result r);
 
 Pfs0Result Pfs0_Parse(Pfs0 *p, const void *data, uint64_t size);
 
+/* Like Pfs0_Parse, but only `hdr_len` bytes of the header/string table are
+ * guaranteed present while the container's real size is `file_size`. Entry
+ * data is validated against `file_size` (so a huge NSP can be probed from a
+ * small header read), while the header/string table are read only within
+ * `hdr_len`. Entry data must not be dereferenced until fully read. */
+Pfs0Result Pfs0_ParseEx(Pfs0 *p, const void *hdr, uint64_t hdr_len, uint64_t file_size);
+
 /* NUL-terminated name for entry i, or "" if i is out of range. */
 const char *Pfs0_Name(const Pfs0 *p, uint32_t i);
 

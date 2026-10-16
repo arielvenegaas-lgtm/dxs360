@@ -169,6 +169,22 @@ jobs:
               eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso
           /tmp/test_pfs0_nso
 
+      - name: "Host test (emucore bridge: init, self-test, load NSO, run, PFS0)"
+        # Exercises the eden/source/core/emucore.c bridge: bring up guest RAM +
+        # interpreter + HLE, run the deterministic self-test, load a synthetic
+        # NSO and execute a bounded slice, and probe a PFS0 header from a partial
+        # read. Mirrors what the frontend does when a title is launched.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 \
+              -I emucore -I emucore/a64 -I emucore/hle -I emucore/loader \
+              -I eden/source -I eden/source/core \
+              eden/tests/test_emucore.c eden/source/core/emucore.c \
+              eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/loader/loader.c -o /tmp/test_emucore
+          /tmp/test_emucore
+
       - name: Big-endian PowerPC run (qemu-ppc) of the interpreter
         # Cross-compile the interpreter, guest memory, HLE bridge and
         # PFS0/NSO loader for 32-bit big-endian PowerPC and execute the tests
@@ -195,6 +211,12 @@ jobs:
               emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/loader/pfs0.c emucore/loader/nso.c emucore/loader/loader.c \
               eden/tests/test_pfs0_nso.c -o /tmp/test_pfs0_nso_ppc && qemu-ppc /tmp/test_pfs0_nso_ppc
+          $PPC -I emucore -I emucore/a64 -I emucore/hle -I emucore/loader \
+              -I eden/source -I eden/source/core \
+              eden/tests/test_emucore.c eden/source/core/emucore.c \
+              eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/loader/loader.c -o /tmp/test_emucore_ppc && qemu-ppc /tmp/test_emucore_ppc
 
       - name: Pull libXenon Docker image
         run: docker pull free60/libxenon:latest
