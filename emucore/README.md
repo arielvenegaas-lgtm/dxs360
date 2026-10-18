@@ -24,9 +24,9 @@ plausible-looking result.
 
 ## Verified milestone: nvdrv service opens honestly, then stops at the first GPU ioctl
 
-The current milestone is the `nvdrv` (`INvDrvServices`) service HLE. The
-retail title reaches `nvdrv`, and the emulator now handles the *non-GPU* part
-of the driver's startup truthfully:
+The `nvdrv` (`INvDrvServices`) service HLE is handled up to the point where a
+GPU is required. The retail title reaches `nvdrv`, and the emulator handles the
+*non-GPU* part of the driver's startup truthfully:
 
 - **HIPC descriptor parsing** (`hle/ipc.c`) decodes copy/move handles, send
   statics, send buffers, and receive buffers with bounds checks against the
@@ -84,21 +84,76 @@ ipc h=0x2a "nvdrv" type=4 cmd=8 sm=0 handled=1          # SetAruid
 ipc h=0x2a "nvdrv" type=4 cmd=0 sm=0 handled=1          # Open("/dev/nvhost-ctrl") -> fd 1
 ipc h=0x2a "nvdrv" type=4 cmd=1 sm=0 handled=1          # Ioctl GET_CONFIG -> Err 0x30006
 ...
-ipc h=0x2c "vi:m"  type=4 cmd=2 sm=0 handled=0 \
-    service "vi:m" Invoke2MethodOld cmd 2 unimplemented
-
-session(x0=0x2c)=vi:m   last_svc=0x21 (SendSyncRequestWithUserBuffer)
 ```
 
 The `GET_CONFIG` answer is accepted and the guest continues through many other
-services; the run now stops later, at `vi:m` command 2 (unimplemented). The
-stop is still honest: it is simply the next request the emulator does not
-handle.
+services; the run no longer stops anywhere in `nvdrv`. Where the title halts now
+is described by the next section.
+
+## Verified milestone: display-service acquisition, stopping at OpenDisplay
+
+`vi:m` is `nn::visrv::sf::IManagerRootService` and its command 2 is
+`GetDisplayService` (switchbrew "Display services"). It takes a `u32
+serviceType` and returns an `nn::visrv::sf::IApplicationDisplayService`:
+
+- **`vi:m` cmd 2 `GetDisplayService`** (the title sends `serviceType = 1`, the
+  system/manager service) hands back a session named `IApplicationDisplayService`.
+- On that object the title then uses only the documented **get-session**
+  commands, each of which returns a further session *by name* and asserts no
+  display state at all:
+  - cmd 102 `GetManagerDisplayService` -> `IManagerDisplayService`
+  - cmd 101 `GetSystemDisplayService` -> `ISystemDisplayService`
+  - cmd 100 `GetRelayService` -> `IHOSBinderDriver`
+- The next call is cmd **1010 `OpenDisplay("Default")`**, traced straight out of
+  the guest message (`params` is the 0x40-byte `DisplayName` block holding
+  `"Default"`, exactly the string switchbrew documents for the default display).
+  It is **not** implemented, so the run stops there and reports:
+
+```
+ipc h=0x2c "vi:m"  type=4 cmd=2  sm=0 handled=1
+ipc h=0x2f "IApplicationDisplayService" type=4 cmd=102 sm=0 handled=1
+ipc h=0x2f "IApplicationDisplayService" type=4 cmd=101 sm=0 handled=1
+ipc h=0x2f "IApplicationDisplayService" type=4 cmd=100 sm=0 handled=1
+ipc h=0x2f "IApplicationDisplayService" type=4 cmd=1010 sm=0 handled=0 \
+    service "IApplicationDisplayService" Invoke2MethodOld cmd 1010 unimplemented
+
+session(x0=0x2f)=IApplicationDisplayService   last_svc=0x21 (SendSyncRequestWithUserBuffer)
+guest[0xbfff000]: SFCI cmd=1010 params="Default"
+```
+
+`OpenDisplay` is the first call that would have to materialize display state —
+a `DisplayId`, a layer table, a compositor. The emulator does not model a
+display yet, so it stops there instead of inventing one. No display, layer or
+frame state is fabricated anywhere in the chain above.
+
+## Remaining work for the display stack
+
+To progress past `OpenDisplay` without faking anything:
+
+1. **Display registry** — the documented display names (`"Default"`,
+   `"External"`, `"Edid"`, `"Internal"`, `"Null"`) with their `DisplayInfo`
+   (0x60 bytes: `Name[0x40]`, `HasLayerLimit`, `LayerCountMax`,
+   `LayerWidthPixelCountMax`, `LayerHeightPixelCountMax`). The layout is
+   documented; the retail `HasLayerLimit`/`LayerCountMax` values are **not**, so
+   `ListDisplays` must wait until they are obtained rather than guessed.
+2. **`OpenDisplay` / `CloseDisplay` / `GetDisplayResolution`** — signatures are
+   documented, as is the fact that `"Default"` reports 1080p even handheld. The
+   retail `DisplayId` numbering is not documented; the emulator would have to
+   declare its own opaque ids and say so.
+3. **`CreateStrayLayer` / `OpenLayer` / `CloseLayer`** — return a
+   `NativeWindow` serialized as an Android `Parcel` (layout documented) carrying
+   a `dispdrv` binder object, which needs `IHOSBinderDriver` first.
+4. **`GetDisplayVsyncEvent`** — a real vsync source. Handing the guest an event
+   that never fires would hang it in `WaitSynchronizationN`, so this must not be
+   stubbed.
+5. **`IManagerDisplayService` layer commands**, and everything past them, only
+   once the nvmap/GM20B pipeline below actually exists.
 
 ## Remaining work for the NVIDIA stack
 
-To progress past the stop above, the following must be implemented for real
-(no stubs that return success):
+No GPU path exists yet, so nothing below can honestly return success. To
+progress (and eventually to give the display stack above something to present
+to), the following must be implemented for real:
 
 1. **`/dev/nvhost-ctrl` ioctls** — `GET_CONFIG` is done (production error);
    still needed: `NVHOST_IOCTL_CTRL_GET_SYNCPOINT` and the syncpoint
@@ -118,9 +173,10 @@ To progress past the stop above, the following must be implemented for real
    / decode / encode engines the title may open next.
 6. **`nvdisp` / display and `nvdrv` `QueryEvent` results** — only once a real
    GPU/driver pipeline exists to service them.
-7. **Additional Horizon services** the title will request beyond `nvdrv`
-   (filesystem/`fsp-srv`, `hid`, `am`, `vi`, `audren`, ...), each implemented
-   truthfully or left as an honest stop.
+7. **Additional Horizon services** the title will request (filesystem/`fsp-srv`,
+   `hid`, `am`, `audren`, ...), each implemented truthfully or left as an honest
+   stop. The `vi` root/display services are the one part already reached (see
+   the display milestone above).
 
 ## Tests and CI
 
@@ -131,6 +187,10 @@ Host tests for this component (run in `.github/workflows/build-eden.yml`):
 - `eden/tests/test_kernel.c` — QueryMemory, ticks, debug log, heap, GetInfo.
 - `eden/tests/test_nvdrv.c` — HIPC descriptors, nvdrv Open/Close/errors,
   `GET_CONFIG` decode + production result, honest stop for other ioctls.
+- `eden/tests/test_vi.c` — `vi:m` `GetDisplayService` and the
+  `IApplicationDisplayService` get-session commands hand out correctly named
+  sessions; `ListDisplays`/`OpenDisplay` stay honest stops and are never
+  reported as succeeding.
 - `eden/tests/test_pfs0_nso.c`, `test_mod0.c`, `test_layout.c`,
   `test_nca.c`, `test_emucore.c`, `nso_report.c` — loaders and bridge.
 

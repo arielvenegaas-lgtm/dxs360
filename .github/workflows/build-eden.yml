@@ -260,6 +260,23 @@ jobs:
               emucore/hle/hle.c emucore/hle/kernel.c emucore/hle/ipc.c -o /tmp/test_nvdrv
           /tmp/test_nvdrv
 
+      - name: "Host test (vi display services: GetDisplayService chain, honest OpenDisplay stop)"
+        # Drives the nn::visrv root service through the real IPC path: vi:m
+        # GetDisplayService(type=1) returns a session literally named
+        # IApplicationDisplayService, that interface's documented get-session
+        # commands (100/101/102) hand back IHOSBinderDriver /
+        # ISystemDisplayService / IManagerDisplayService by name, and the
+        # data-bearing display commands (ListDisplays, OpenDisplay) stay
+        # unhandled so the guest halts honestly instead of being told a display
+        # was opened when none is modelled. Widening HLEK_SESSION_NAME to 40 is
+        # what keeps those 27-char interface names intact for dispatch.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/hle \
+              eden/tests/test_vi.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/hle/ipc.c -o /tmp/test_vi
+          /tmp/test_vi
+
       - name: "Host test (synthetic NSO report: entry, icount, halt, SVC, faults)"
         # Loads synthetic NSO images through the real loaders and prints the exact
         # entry PC, instruction count, halt reason, SVC dispatch counters and

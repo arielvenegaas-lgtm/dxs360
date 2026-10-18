@@ -86,7 +86,10 @@ typedef void (*HleKernelLog)(void *ctx, const char *s);
  * been turned into a CMIF domain (the sm: service is one) and/or serve a
  * concrete service object (see ipc.c). */
 #define HLEK_MAX_SESSIONS 32
-#define HLEK_SESSION_NAME 24
+/* Must hold the longest Horizon interface name handed out by an HLE getter
+ * ("IGraphicsScalingParametersFunctions" is 35 chars); shorter names were
+ * silently truncated, breaking name-based dispatch and diagnostics. */
+#define HLEK_SESSION_NAME 40
 
 enum {
     HLEK_OBJ_NONE = 0,   /* no dispatchable object (bare port)          */

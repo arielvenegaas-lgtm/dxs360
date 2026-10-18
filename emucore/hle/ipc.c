@@ -946,6 +946,63 @@ static int app_funcs_dispatch(HleKernel *k, HleKernelSession *s,
     }
 }
 
+/* nn::visrv::sf::IManagerRootService ("vi:m", switchbrew "Display services").
+ * Cmd 2 GetDisplayService(u32 serviceType) returns an
+ * nn::visrv::sf::IApplicationDisplayService and nothing else. That object is
+ * the *display service interface*, not a connected display: it is the handle
+ * the title uses to enumerate/open displays, and returning it fabricates no
+ * display state. Enumeration itself (ListDisplays/OpenDisplay/... on
+ * IApplicationDisplayService) is not implemented and surfaces as an exact
+ * stop. vi:u (IApplicationRootService) and vi:s (ISystemRootService) expose
+ * the same operation under different command numbers (0 and 1); they are left
+ * to surface as exact stops until a title actually issues them. */
+static int vi_m_dispatch(HleKernel *k, A64 *cpu, uint64_t buf,
+                         uint32_t params_off, uint32_t cmd, HleKernelSession *s,
+                         HipcOut *out) {
+    switch (cmd) {
+    case 2: { /* GetDisplayService: input u32 serviceType (0=user, 1=manager) */
+        uint32_t type = 0;
+        if (rd32(cpu, buf + params_off, &type) && k->log) {
+            char line[80];
+            snprintf(line, sizeof(line),
+                     "vi:m GetDisplayService(type=%u) -> IApplicationDisplayService",
+                     type);
+            k->log(k->log_ctx, line);
+        }
+        return return_subobject(k, s, "IApplicationDisplayService", out);
+    }
+    default:
+        return 0;
+    }
+}
+
+/* nn::visrv::sf::IApplicationDisplayService, the object handed out by the
+ * GetDisplayService call above. switchbrew "Display services" documents only
+ * the get-session commands as "returns an #ISomething" (100 GetRelayService,
+ * 101 GetSystemDisplayService, 102 GetManagerDisplayService, 103
+ * GetIndirectDisplayTransactionService); every data-bearing command
+ * (ListDisplays, OpenDisplay, OpenLayer, ...) is implemented on real displays
+ * that this port does not have, so it must stop honestly. */
+static int app_display_service_dispatch(HleKernel *k, HleKernelSession *s,
+                                        uint32_t cmd, HipcOut *out) {
+    /* 100 GetRelayService: no input; "Returns an IHOSBinderDriver interface
+     * which abstracts nn::visrv::service::RelayServiceImpl". */
+    if (cmd == 100)
+        return return_subobject(k, s, "IHOSBinderDriver", out);
+    /* switchbrew: "GetSystemDisplayService Returns an #ISystemDisplayService",
+     * available from vi:s and vi:m (this object came from vi:m with
+     * serviceType=1). */
+    if (cmd == 101)
+        return return_subobject(k, s, "ISystemDisplayService", out);
+    /* 102 GetManagerDisplayService: no input, returns #IManagerDisplayService.
+     * Availability is vi:m-only per switchbrew (0xA72 otherwise); this object
+     * is only ever reached from the vi:m GetDisplayService above, which the
+     * guest opened with serviceType=1 (the manager/system service). */
+    if (cmd == 102)
+        return return_subobject(k, s, "IManagerDisplayService", out);
+    return 0;
+}
+
 /* Dispatch a method message to a service session by name. */
 static int service_dispatch(HleKernel *k, A64 *cpu, uint64_t buf,
                             const HipcIn *in, uint32_t params_off, uint32_t cmd,
@@ -960,6 +1017,10 @@ static int service_dispatch(HleKernel *k, A64 *cpu, uint64_t buf,
         return lm_logger_dispatch(cmd, out);
     if (strcmp(name, "appletOE") == 0)
         return appletoe_dispatch(k, s, cmd, out);
+    if (strcmp(name, "vi:m") == 0)
+        return vi_m_dispatch(k, cpu, buf, params_off, cmd, s, out);
+    if (strcmp(name, "IApplicationDisplayService") == 0)
+        return app_display_service_dispatch(k, s, cmd, out);
     if (strcmp(name, "IApplicationProxy") == 0)
         return app_proxy_dispatch(k, s, cmd, out);
     if (strcmp(name, "IWindowController") == 0)
