@@ -24,6 +24,7 @@
  * the exact stop instead of inventing a response.
  */
 #include "ipc.h"
+#include "nv_ioctl.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -541,10 +542,13 @@ static int lm_logger_dispatch(uint32_t cmd, HipcOut *out) {
 
 /* NvResult codes (switchbrew "NV services" / nvtypes). */
 enum {
-    NV_SUCCESS               = 0x0,
-    NV_BAD_PARAMETER         = 0x4,
-    NV_INSUFFICIENT_MEMORY   = 0x6,
-    NV_FILE_OPERATION_FAILED = 0x30003
+    NV_SUCCESS                    = 0x0,
+    NV_BAD_PARAMETER              = 0x4,
+    NV_INSUFFICIENT_MEMORY        = 0x6,
+    NV_FILE_OPERATION_FAILED      = 0x30003,
+    /* NVHOST_IOCTL_CTRL_GET_CONFIG is "not available in production mode"
+     * (switchbrew); yuzu/Ryujinx both return 0x30006 for it. */
+    NV_NOT_AVAILABLE_IN_PRODUCTION = 0x30006
 };
 
 #define NVDRV_MAX_FD 16
@@ -594,6 +598,25 @@ static const char *nv_fd_dev(uint32_t fd) {
     for (i = 0; i < NVDRV_MAX_FD; ++i)
         if (g_nvfd[i].in_use && g_nvfd[i].fd == fd) return g_nvfd[i].dev;
     return NULL;
+}
+
+/* Locate the ioctl argument region. Transports differ: libnx sends a type-0x21
+ * send buffer, while this title's SDK inlines the argument as a send static
+ * (observed for NVHOST_IOCTL_CTRL_GET_CONFIG). Prefer the send static, then the
+ * send buffer. Returns 0 if neither table is present. */
+static int nv_ioctl_arg(A64 *cpu, uint64_t buf, const HipcIn *in,
+                        uint64_t *addr, uint32_t *size) {
+    HipcStatic ss;
+    HipcBuf sb;
+    if (hipc_send_static(cpu, buf, in, 0, &ss)) {
+        *addr = ss.addr; *size = ss.size;
+        return 1;
+    }
+    if (hipc_send_buffer(cpu, buf, in, 0, &sb)) {
+        *addr = sb.addr; *size = sb.size;
+        return 1;
+    }
+    return 0;
 }
 
 static int nvdrv_dispatch(HleKernel *k, A64 *cpu, uint64_t buf, const HipcIn *in,
@@ -652,27 +675,60 @@ static int nvdrv_dispatch(HleKernel *k, A64 *cpu, uint64_t buf, const HipcIn *in
     case 1: {  /* Ioctl(u32 fd, u32 iocode) + in/out buffers -> u32 Err */
         uint32_t fd = 0, iocode = 0;
         const char *dev;
-        HipcStatic ss;
-        HipcBuf sb, rb;
-        int hs, hb, hr;
+        uint64_t aaddr = 0;
+        uint32_t asize = 0;
+        int have_arg;
+
         rd32(cpu, buf + params_off + 0, &fd);
         rd32(cpu, buf + params_off + 4, &iocode);
         dev = nv_fd_dev(fd);
-        hs = hipc_send_static(cpu, buf, in, 0, &ss);
-        hb = hipc_send_buffer(cpu, buf, in, 0, &sb);
-        hr = hipc_recv_buffer(cpu, buf, in, 0, &rb);
-        snprintf(g_last, sizeof(g_last),
-                 "nvdrv Ioctl fd=%u dev=\"%s\" iocode=0x%08x "
-                 "sstat{0x%llx,0x%x} sbuf{0x%llx,0x%llx} rbuf{0x%llx,0x%llx}: "
-                 "GPU ioctl unimplemented",
-                 fd, dev ? dev : "?", iocode,
-                 (unsigned long long)(hs ? ss.addr : 0), hs ? ss.size : 0,
-                 (unsigned long long)(hb ? sb.addr : 0),
-                 (unsigned long long)(hb ? sb.size : 0),
-                 (unsigned long long)(hr ? rb.addr : 0),
-                 (unsigned long long)(hr ? rb.size : 0));
-        if (k->log) k->log(k->log_ctx, g_last);
-        return 0;   /* honest stop at the first GPU ioctl */
+        have_arg = nv_ioctl_arg(cpu, buf, in, &aaddr, &asize);
+
+        /* NVHOST_IOCTL_CTRL_GET_CONFIG (name[0x41], key[0x41], value[0x101]):
+         * verified against switchbrew "NV services". It is "not available in
+         * production mode", so a retail title expects Err 0x30006 here. We
+         * answer with that verified production result rather than inventing a
+         * configuration value; the value[] region is left untouched. */
+        if (dev && strcmp(dev, "/dev/nvhost-ctrl") == 0 &&
+            iocode == NVHOST_IOCTL_CTRL_GET_CONFIG &&
+            have_arg && asize >= NVHOST_CTRL_CONFIG_SIZE) {
+            char name[NVHOST_CTRL_CONFIG_NAME_SIZE];
+            char key[NVHOST_CTRL_CONFIG_KEY_SIZE];
+            char line[192];
+            uint32_t off;
+            if (!rd(cpu, aaddr + NVHOST_CTRL_CONFIG_NAME_OFF, name, sizeof(name) - 1))
+                name[0] = 0;
+            name[sizeof(name) - 1] = 0;
+            if (!rd(cpu, aaddr + NVHOST_CTRL_CONFIG_KEY_OFF, key, sizeof(key) - 1))
+                key[0] = 0;
+            key[sizeof(key) - 1] = 0;
+            snprintf(line, sizeof(line),
+                     "nvdrv GET_CONFIG \"%s!%s\" -> Err=0x%x (production)",
+                     name, key, NV_NOT_AVAILABLE_IN_PRODUCTION);
+            if (k->log) k->log(k->log_ctx, line);
+            off = out_cmif(out, 0);
+            out_param32(out, off, NV_NOT_AVAILABLE_IN_PRODUCTION);
+            return 1;
+        }
+
+        /* Any other ioctl stays unhandled: report the exact decoded fields. */
+        {
+            HipcBuf rb;
+            int hr = hipc_recv_buffer(cpu, buf, in, 0, &rb);
+            snprintf(g_last, sizeof(g_last),
+                     "nvdrv Ioctl fd=%u dev=\"%s\" iocode=0x%08x "
+                     "dir=%u type=0x%02x nr=0x%02x size=0x%x "
+                     "arg{0x%llx,0x%x} rbuf{0x%llx,0x%llx}: GPU ioctl unimplemented",
+                     fd, dev ? dev : "?", iocode,
+                     NV_IOC_DIR(iocode), NV_IOC_TYPE(iocode), NV_IOC_NR(iocode),
+                     NV_IOC_SIZE(iocode),
+                     (unsigned long long)(have_arg ? aaddr : 0),
+                     have_arg ? asize : 0,
+                     (unsigned long long)(hr ? rb.addr : 0),
+                     (unsigned long long)(hr ? rb.size : 0));
+            if (k->log) k->log(k->log_ctx, g_last);
+            return 0;   /* honest stop at the first unimplemented GPU ioctl */
+        }
     }
     case 2: {  /* Close(u32 fd) -> u32 Err */
         uint32_t fd = 0, off;

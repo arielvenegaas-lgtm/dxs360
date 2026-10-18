@@ -1,6 +1,7 @@
 /* Host-side test for the nvdrv (INvDrvServices) HIPC transport:
- * descriptor parsing, Open/Close file-descriptor bookkeeping, and the honest
- * stop at the first unsupported GPU ioctl.
+ * descriptor parsing, Open/Close file-descriptor bookkeeping, the
+ * NVHOST_IOCTL_CTRL_GET_CONFIG decode + production-mode result, and the honest
+ * stop at the first genuinely unsupported GPU ioctl.
  *
  * Build (from the repository root):
  *   gcc -std=c99 -Wall -Wextra -I emucore/a64 -I emucore/hle \
@@ -14,12 +15,14 @@
 #include "a64_mem.h"
 #include "kernel.h"
 #include "ipc.h"
+#include "nv_ioctl.h"
 
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++fails; } } while (0)
 
 #define GUEST_BASE 0x10000000u
 #define MB         0x800u          /* message buffer offset in guest memory */
 #define PATH_OFF   0x400u          /* where we stage device-path strings     */
+#define ARG_OFF    0x600u          /* where we stage ioctl argument structs  */
 
 #define CMIF_IN_MAGIC  0x49434653u
 #define CMIF_OUT_MAGIC 0x4F434653u
@@ -215,8 +218,50 @@ int main(void) {
         CHECK(resp_param(&mem, 0) == 0x4, "Close unknown fd Err=BadParameter");
     }
 
-    /* Ioctl (cmd 1) on an open nvhost-ctrl fd is NOT emulated: it must return
-     * unhandled (0) and report the exact command so the caller stops cleanly. */
+    /* Ioctl request-number encoding: the macros must decode the known
+     * NVHOST_IOCTL_CTRL_GET_CONFIG value (0xC183001B = inout, type 0x00,
+     * nr 0x1B, size 0x183). */
+    CHECK(NVHOST_IOCTL_CTRL_GET_CONFIG == 0xc183001bu, "GET_CONFIG encoding");
+    CHECK(NV_IOC_DIR(0xc183001bu) == (NV_IOC_READ | NV_IOC_WRITE), "decode dir");
+    CHECK(NV_IOC_TYPE(0xc183001bu) == NV_MAGIC_CUSTOM, "decode type");
+    CHECK(NV_IOC_NR(0xc183001bu) == 0x1bu, "decode nr");
+    CHECK(NV_IOC_SIZE(0xc183001bu) == 387, "decode size");
+    CHECK(NVHOST_CTRL_CONFIG_SIZE == 387, "GET_CONFIG struct size");
+
+    /* NVHOST_IOCTL_CTRL_GET_CONFIG on nvhost-ctrl (argument in a send static,
+     * as the title's SDK sends it) is "not available in production mode", so
+     * the verified result is Err=0x30006 -- the driver must not invent a
+     * configuration value. */
+    {
+        const char *path = "/dev/nvhost-ctrl";
+        uint8_t arg[NVHOST_CTRL_CONFIG_SIZE];
+        build_req(&mem, 1, 0, 0);
+        A64GuestMem_Write(&mem, GUEST_BASE + PATH_OFF, (void *)path,
+                          (uint32_t)strlen(path) + 1);
+        put_sbuf(&mem, 0, GUEST_BASE + PATH_OFF, (uint32_t)strlen(path), 0);
+        HleIpc_SendSyncRequest(&k, &cpu, h, GUEST_BASE + MB, 0x200);
+        fd = resp_param(&mem, 0);
+
+        memset(arg, 0, sizeof(arg));
+        memcpy(arg + NVHOST_CTRL_CONFIG_NAME_OFF, "nv", 3);
+        memcpy(arg + NVHOST_CTRL_CONFIG_KEY_OFF, "NV_MEMORY_PROFILER", 19);
+        A64GuestMem_Write(&mem, GUEST_BASE + ARG_OFF, arg, sizeof(arg));
+
+        p = build_req_st(&mem, 1, 0, 0, 1);
+        wr32(&mem, MB + p + 0, fd);
+        wr32(&mem, MB + p + 4, NVHOST_IOCTL_CTRL_GET_CONFIG);
+        put_sstat(&mem, 0, GUEST_BASE + ARG_OFF, NVHOST_CTRL_CONFIG_SIZE);
+        CHECK(HleIpc_SendSyncRequest(&k, &cpu, h, GUEST_BASE + MB, 0x200) == 1,
+              "GET_CONFIG handled");
+        CHECK(resp_param(&mem, 0) == 0x30006,
+              "GET_CONFIG Err=0x30006 (not available in production)");
+        CHECK(strstr(g_log, "GET_CONFIG") != NULL, "GET_CONFIG logged");
+        CHECK(strstr(g_log, "NV_MEMORY_PROFILER") != NULL,
+              "GET_CONFIG key logged");
+    }
+
+    /* A GET_CONFIG whose argument is too short to hold name+key is refused
+     * safely (no out-of-bounds read): it falls through to the honest stop. */
     {
         const char *path = "/dev/nvhost-ctrl";
         build_req(&mem, 1, 0, 0);
@@ -226,21 +271,37 @@ int main(void) {
         HleIpc_SendSyncRequest(&k, &cpu, h, GUEST_BASE + MB, 0x200);
         fd = resp_param(&mem, 0);
 
-        /* The ioctl argp is carried in a send static (as the SDK does). */
         p = build_req_st(&mem, 1, 0, 0, 1);
         wr32(&mem, MB + p + 0, fd);
-        wr32(&mem, MB + p + 4, 0xc183001bu);     /* iocode */
-        put_sstat(&mem, 0, GUEST_BASE + PATH_OFF, 387);
+        wr32(&mem, MB + p + 4, NVHOST_IOCTL_CTRL_GET_CONFIG);
+        put_sstat(&mem, 0, GUEST_BASE + ARG_OFF, 8);   /* too small */
         CHECK(HleIpc_SendSyncRequest(&k, &cpu, h, GUEST_BASE + MB, 0x200) == 0,
-              "Ioctl is unhandled (honest stop)");
-        CHECK(strstr(HleIpc_LastUnhandled(), "Ioctl") != NULL,
-              "Ioctl reported");
-        CHECK(strstr(HleIpc_LastUnhandled(), "0xc183001b") != NULL,
-              "Ioctl iocode reported");
-        CHECK(strstr(HleIpc_LastUnhandled(), "nvhost-ctrl") != NULL,
-              "Ioctl device reported");
-        CHECK(strstr(HleIpc_LastUnhandled(), "0x183") != NULL,
-              "Ioctl input size reported");
+              "short GET_CONFIG arg stops honestly");
+    }
+
+    /* Any other nvhost-ctrl ioctl must still stop honestly (return 0) and
+     * report the decoded dir/type/nr/size. */
+    {
+        const char *path = "/dev/nvhost-ctrl";
+        build_req(&mem, 1, 0, 0);
+        A64GuestMem_Write(&mem, GUEST_BASE + PATH_OFF, (void *)path,
+                          (uint32_t)strlen(path) + 1);
+        put_sbuf(&mem, 0, GUEST_BASE + PATH_OFF, (uint32_t)strlen(path), 0);
+        HleIpc_SendSyncRequest(&k, &cpu, h, GUEST_BASE + MB, 0x200);
+        fd = resp_param(&mem, 0);
+
+        p = build_req_st(&mem, 1, 0, 0, 1);
+        wr32(&mem, MB + p + 0, fd);
+        wr32(&mem, MB + p + 4, NVHOST_IOCTL_CTRL_SYNCPT_READ);
+        put_sstat(&mem, 0, GUEST_BASE + ARG_OFF, 8);
+        CHECK(HleIpc_SendSyncRequest(&k, &cpu, h, GUEST_BASE + MB, 0x200) == 0,
+              "unimplemented ioctl stops honestly");
+        CHECK(strstr(HleIpc_LastUnhandled(), "unimplemented") != NULL,
+              "unimplemented ioctl reported");
+        CHECK(strstr(HleIpc_LastUnhandled(), "nr=0x14") != NULL,
+              "unimplemented ioctl decoded nr");
+        CHECK(strstr(HleIpc_LastUnhandled(), "type=0x00") != NULL,
+              "unimplemented ioctl decoded type");
     }
 
     /* A request to an unknown session handle is declined. */
@@ -250,7 +311,7 @@ int main(void) {
           "unknown handle reported");
 
     if (fails == 0) {
-        printf("PASS: nvdrv (descriptors, Open/Close, errors, honest ioctl stop)\n");
+        printf("PASS: nvdrv (descriptors, Open/Close, GET_CONFIG decode, honest ioctl stop)\n");
         return 0;
     }
     printf("FAIL: %d check(s) failed\n", fails);
