@@ -21,6 +21,8 @@
 
 #include <stdint.h>
 
+#include "hle/ipc.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,6 +45,33 @@ extern "C" {
  * guest heap/stack; it remains far inside the .guestram window (0x83000000 up
  * to 0x9E000000 in eden/app.lds). */
 #define EMU_GUEST_RAM_SIZE (64u * 1024u * 1024u)
+
+/* The process code region: every ExeFS module is mapped contiguously starting
+ * here, and the process enters at the first module's base (rtld). Horizon's
+ * (deprecated) 64-bit address space places a process's code at 0x8000000, and
+ * this is exactly where rtld's module-discovery loop begins probing -- it walks
+ * upward from a hard-coded 0x8000000 (the base of `LocateSpaceForMapDeprecated`,
+ * bounded by 0x78000000 / a type-0x10 terminator) and treats every
+ * CodeStatic + R|X region as a loadable module. Mapping the modules anywhere
+ * else makes rtld discover nothing and fail its first symbol lookup. */
+#define EMU_CODE_BASE 0x8000000ULL
+
+/* A retail title asks the kernel for a multi-gigabyte heap (Cave Story+ computes
+ * 0xC0000000 - image_base and reserves ~3 GB). A flat buffer cannot represent
+ * that, so the process's address space is decoupled from the flat reservation:
+ * the low 64 MB is real, flat RAM (modules + stack + TLS) and everything above
+ * it is a sparse, demand-paged heap window. The window is fully addressable --
+ * every heap access is bounds-checked and either resolves to a real frame or
+ * faults honestly -- but only pages actually touched consume RAM, bounded by a
+ * fixed frame budget because the Xenon target has 512 MB of shared RAM. */
+#define EMU_VA_END 0x100000000ULL              /* process address-space top   */
+#define EMU_HEAP_VA_BASE (EMU_CODE_BASE + EMU_GUEST_RAM_SIZE)  /* = 0xC000000  */
+#define EMU_HEAP_VA_END  EMU_VA_END
+#define EMU_HEAP_PAGE_SIZE 0x1000u             /* heap page / frame size      */
+/* Real RAM the demand-paged heap may back before an access fails with a clear
+ * out-of-memory fault. Kept inside the .guestram window alongside RAM/scratch. */
+#define EMU_HEAP_FRAME_BUDGET (128u * 1024u * 1024u)
+#define EMU_HEAP_PAGES ((EMU_HEAP_VA_END - EMU_HEAP_VA_BASE) / EMU_HEAP_PAGE_SIZE)
 
 /* Initialise guest RAM, the AArch64 interpreter, the HLE bridge and install the
  * SVC handler. Idempotent. Returns 1 on success. */
@@ -102,6 +131,19 @@ uint64_t EmuCore_PC(void);
 uint64_t EmuCore_Entry(void);
 uint64_t EmuCore_InstrCount(void);
 
+/* The address/size/write flag of the last memory fault (valid when
+ * EmuCore_HaltName() reports a memory fault). Any pointer may be NULL. */
+void EmuCore_FaultInfo(uint64_t *addr, uint64_t *size, int *write);
+
+/* 1 if the last memory fault was the demand-paged heap running out of frames
+ * (the guest touched more of its reservation than the fixed frame budget can
+ * back), so the caller can report it as an out-of-memory event. */
+int EmuCore_FaultIsOOM(void);
+
+/* One-line report of the demand-paged heap: its guest base/size, bytes backed
+ * by real frames, and the frame budget. Never NULL. */
+const char *EmuCore_HeapReport(void);
+
 /* One-line summary of the last load's MOD0 relocation work (entry, reloc
  * counts, import count). Never NULL. */
 const char *EmuCore_RelocReport(void);
@@ -122,6 +164,56 @@ uint64_t EmuCore_LastSvc(void);
 
 /* Human-readable name of that syscall ("" / "?" when unknown). */
 const char *EmuCore_LastSvcName(void);
+
+/* Copy `len` bytes from guest address `addr` into `buf`. Returns the number of
+ * bytes read (0 if the range is outside the mapped reservation). */
+unsigned long EmuCore_ReadGuest(uint64_t addr, void *buf, unsigned long len);
+
+/* Port name a connected session handle refers to, or NULL if unknown. */
+const char *EmuCore_SessionName(uint64_t handle);
+
+/* Copy X0..X7 as they were at the last SVC into `out` (8 entries). Shows the
+ * exact arguments of the kernel call the guest needs next. */
+void EmuCore_LastSvcArgs(unsigned long long out[8]);
+
+/* Full register snapshot of the current stop: out[0..30]=x0..x30,
+ * out[31]=sp, out[32]=pc (same value as EmuCore_PC). Any pointer may be NULL. */
+void EmuCore_DumpRegs(unsigned long long out[33]);
+
+/* Debug: PC of the first instruction in the last run that dropped sp to (near)
+ * zero (0 if sp never collapsed). Pinpoints stack-corruption sources. */
+uint64_t EmuCore_SpZeroPc(void);
+
+/* One QueryMemory probe as seen by the guest, plus how rtld's module scan
+ * treats the region it resolved to. */
+typedef struct EmuQueryProbe {
+    unsigned long long addr;   /* address the guest probed            */
+    unsigned long long base;   /* region base the kernel answered     */
+    unsigned long long size;   /* region size the kernel answered     */
+    unsigned type;             /* MemoryType                          */
+    unsigned perm;             /* permission bits (R=1 W=2 X=4)       */
+    const char *verdict;       /* rtld accept/reject/stop reason      */
+} EmuQueryProbe;
+
+/* Copy up to `max` recent QueryMemory probes (oldest first) into `out` and
+ * return the number written. Shows exactly how rtld discovers the module
+ * layout and why it accepts, skips or stops on each region. */
+int EmuCore_QueryTrace(EmuQueryProbe *out, int max);
+
+/* One IPC request as sent by the guest, plus whether this layer answered it.
+ * Shows the exact service conversation the SDK is driving. */
+typedef struct EmuIpcTrace {
+    unsigned long long handle;
+    char     name[HLEK_SESSION_NAME];
+    unsigned type;            /* HIPC message type                     */
+    unsigned cmd;             /* CMIF method id / manager cmd          */
+    int      is_sm;           /* target was the service manager        */
+    int      handled;         /* 1 = response written                  */
+    char     note[HLEIPC_NOTE];
+} EmuIpcTrace;
+
+/* Copy up to `max` recent IPC requests (oldest first) into `out`. */
+int EmuCore_IpcTrace(EmuIpcTrace *out, int max);
 
 #ifdef __cplusplus
 }

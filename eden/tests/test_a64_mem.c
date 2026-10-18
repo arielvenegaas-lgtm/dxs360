@@ -62,8 +62,72 @@ int main(void) {
         CHECK(cpu.fault_write == 1, "fault direction is write");
     }
 
+    /* Sparse, demand-paged window above the flat buffer: reads of untouched
+     * pages are zero, writes allocate frames up to a bounded pool, accesses
+     * outside the window fault, and running out of frames reports OOM. */
+    {
+        static uint32_t map[256];
+        static uint8_t  frames[16 * 4096];
+        A64GuestMem sm;
+        uint8_t  buf[8];
+        uint64_t v;
+        int i;
+
+        A64GuestMem_Init(&sm, g_buf, sizeof(g_buf), 0x10000000u);
+        A64GuestMem_InitSparse(&sm, map, 256, frames, sizeof(frames), 4096);
+        CHECK(A64GuestMem_MapSparse(&sm, 0x20000000u, 256 * 4096) == 1,
+              "sparse window maps");
+        CHECK(A64GuestMem_MapSparse(&sm, 0x20000100u, 4096) == 0,
+              "misaligned window rejected");
+
+        CHECK(A64GuestMem_Read(&sm, 0x20000000u, buf, 8) == 1,
+              "read of untouched page succeeds");
+        CHECK(buf[0] == 0 && buf[7] == 0, "untouched page reads as zero");
+        CHECK(A64GuestMem_SparseCommitted(&sm) == 0,
+              "a read allocates no frame");
+
+        v = 0x1122334455667788ULL;
+        CHECK(A64GuestMem_Write(&sm, 0x20000000u, &v, 8) == 1,
+              "write allocates a frame");
+        v = 0;
+        CHECK(A64GuestMem_Read(&sm, 0x20000000u, &v, 8) == 1 && v == 0x1122334455667788ULL,
+              "sparse write/read roundtrip");
+        CHECK(A64GuestMem_SparseCommitted(&sm) == 4096, "one page committed");
+
+        /* A store spanning two pages must be split across frames. */
+        v = 0xAABBCCDDEEFF0011ULL;
+        CHECK(A64GuestMem_Write(&sm, 0x20000FFCu, &v, 8) == 1,
+              "cross-page write succeeds");
+        v = 0;
+        CHECK(A64GuestMem_Read(&sm, 0x20000FFCu, &v, 8) == 1 && v == 0xAABBCCDDEEFF0011ULL,
+              "cross-page readback");
+        CHECK(A64GuestMem_SparseCommitted(&sm) == 8192, "two pages committed");
+
+        /* One more page (index 2) fits the pool; the 17th distinct page does
+         * not, and must fault as OOM rather than corrupt memory. */
+        for (i = 2; i < 16; ++i) {
+            uint8_t one = (uint8_t)i;
+            CHECK(A64GuestMem_Write(&sm, 0x20000000u + (uint64_t)i * 4096u, &one, 1) == 1,
+                  "page within pool writes");
+        }
+        {
+            uint8_t one = 0x42;
+            CHECK(A64GuestMem_Write(&sm, 0x20000000u + 16u * 4096u, &one, 1) == 0,
+                  "overflowing the frame pool faults");
+            CHECK(sm.fault_oom == 1, "fault flagged as OOM");
+            CHECK(sm.fault_write == 1, "OOM fault direction is write");
+            CHECK(A64GuestMem_SparseCommitted(&sm) == 16 * 4096,
+                  "committed stops at the frame budget");
+        }
+
+        /* Outside the window is an ordinary bounds fault, not OOM. */
+        CHECK(A64GuestMem_Read(&sm, 0x20000000u + 256u * 4096u, buf, 1) == 0,
+              "access past the window faults");
+        CHECK(sm.fault_oom == 0, "out-of-window fault is not OOM");
+    }
+
     if (fails == 0) {
-        printf("PASS: a64_mem (bounds, overflow, roundtrip, interpreter fault metadata)\n");
+        printf("PASS: a64_mem (bounds, overflow, roundtrip, sparse heap, interpreter fault metadata)\n");
         return 0;
     }
     printf("FAIL: %d check(s) failed\n", fails);

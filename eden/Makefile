@@ -65,7 +65,7 @@ export DEPSDIR  := $(CURDIR)/$(BUILD)
 # (emu_*.o; uniquely named so they never collide with the frontend's loader.o).
 export OFILES   := main.o app.o ui.o nav.o library.o fs.o core.o loader.o artwork.o img.o gfx.o input.o fat32.o regskip.o \
                    emucore.o a64_test_entry.o \
-                   emu_a64.o emu_a64_mem.o emu_hle.o emu_kernel.o emu_pfs0.o emu_nso.o emu_loader.o emu_mod0.o emu_layout.o \
+                   emu_a64.o emu_a64_mem.o emu_hle.o emu_kernel.o emu_ipc.o emu_pfs0.o emu_nso.o emu_loader.o emu_mod0.o emu_layout.o \
                    emu_aes.o emu_keys.o emu_nca.o
 
 export INCLUDE  := -I$(CURDIR)/source -I$(CURDIR)/source/ui -I$(CURDIR)/source/input -I$(CURDIR)/source/game -I$(CURDIR)/source/filesystem -I$(CURDIR)/source/core -I$(CURDIR)/../src -I$(CURDIR)/../xenon/source -I$(CURDIR)/$(BUILD) -I$(LIBXENON_INC) -I$(EMUCORE) -I$(EMUCORE)/a64 -I$(EMUCORE)/hle -I$(EMUCORE)/loader
@@ -132,6 +132,8 @@ emu_a64_mem.o: $(EMUCORE)/a64/a64_mem.c
 emu_hle.o: $(EMUCORE)/hle/hle.c
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
 emu_kernel.o: $(EMUCORE)/hle/kernel.c
+	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
+emu_ipc.o: $(EMUCORE)/hle/ipc.c
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@
 emu_pfs0.o: $(EMUCORE)/loader/pfs0.c
 	$(CC) -std=c99 -Wall -Wextra $(CFLAGS) $(EMUCORE_INC) -c $< -o $@

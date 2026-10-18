@@ -28,6 +28,14 @@ static uint8_t g_ram[EMU_GUEST_RAM_SIZE];
 #define EMU_NSP_SCRATCH_SIZE (16u * 1024u * 1024u)
 __attribute__((section(".guestram")))
 static uint8_t g_nsp_scratch[EMU_NSP_SCRATCH_SIZE];
+/* Demand-paged heap backing: a page->frame map (one 32-bit entry per 4 KiB of
+ * the multi-gigabyte window) and a bounded pool of real frames. Both live in
+ * .guestram so they stay out of low .bss. The map is sparse in the sense that
+ * it is only populated for pages the guest actually touches. */
+__attribute__((section(".guestram")))
+static uint32_t g_heap_map[EMU_HEAP_PAGES];
+__attribute__((section(".guestram")))
+static uint8_t  g_heap_frames[EMU_HEAP_FRAME_BUDGET];
 static A64GuestMem g_mem;
 static A64             g_cpu;
 static HleState        g_hle;
@@ -57,19 +65,84 @@ typedef struct EmuModule {
 
 static EmuModule       g_mods[LAYOUT_MAX_MODULES];
 
-/* Top of guest RAM: the process stack grows down from here. The kernel gives
- * the main thread a stack above the mapped modules; the flat guest-RAM model
- * mirrors that by placing SP at the end of the reservation. */
+/* Top of the flat guest-RAM reservation. */
+static uint64_t GuestRamTop(void) {
+    return EMU_CODE_BASE + (uint64_t)sizeof(g_ram);
+}
+
+/* The kernel gives each thread a ThreadLocalRegion and points TPIDRRO_EL0 at
+ * it; main-thread code reads that register to reach its TLS. The flat model
+ * reserves the top page of the reservation for it. */
+#define EMU_TLS_SIZE 0x1000u
+static uint64_t GuestTlsBase(void) {
+    return GuestRamTop() - EMU_TLS_SIZE;
+}
+
+/* The process stack grows down from just below the TLS page. */
 static uint64_t GuestStackTop(void) {
-    return (uint64_t)sizeof(g_ram) & ~(uint64_t)0xf;
+    return GuestTlsBase() & ~(uint64_t)0xf;
+}
+
+/* Kernel-provided main-thread state: stack pointer and thread pointers. */
+static void SetupMainThread(void) {
+    uint64_t tlr = GuestTlsBase();
+    uint64_t off = tlr - EMU_CODE_BASE;
+    uint64_t v;
+    uint64_t ttype;
+    g_cpu.sp = GuestStackTop();
+    g_cpu.tpidrro_el0 = tlr;
+    g_cpu.tpidr_el0   = tlr;
+    ttype = tlr + 0x300; /* place a dummy ThreadType in TLS area past TLR */
+    /* zero a chunk */
+    memset(g_ram + off + 0x300, 0, 0x200);
+    v = tlr + 0x180; /* ThreadPointer object */
+    memcpy(g_ram + off + 0x1F0, &v, 8);
+    v = ttype;       /* ThreadType pointer */
+    memcpy(g_ram + off + 0x1F8, &v, 8);
+    v = 0;
+    memcpy(g_ram + off + 0x1D0, &v, 8);
+    v = 0;
+    memcpy(g_ram + off + 0x1D8, &v, 8);
+    v = 0;
+    memcpy(g_ram + off + 0x1E0, &v, 8);
+    v = 0;
+    memcpy(g_ram + off + 0x1E8, &v, 8);
+    g_cpu.tpidr_el0   = tlr + 0x180;
+}
+
+/* Heap placement hook (SetHeapSize): place the reservation at the top of the
+ * sparse window so the SDK's Total-Used sizing lands exactly on its base, then
+ * back the address range with the demand-paged window. The requested size is
+ * mapped in full (never silently shrunk); it is rounded up to a page boundary
+ * only to satisfy the window's alignment. */
+static int HeapMapFn(void *ctx, uint64_t size, uint64_t *out_base) {
+    A64GuestMem *m = (A64GuestMem *)ctx;
+    uint64_t asize, base;
+    if (size == 0) return 0;
+    asize = (size + EMU_HEAP_PAGE_SIZE - 1) & ~(uint64_t)(EMU_HEAP_PAGE_SIZE - 1);
+    if (asize > EMU_HEAP_VA_END - EMU_HEAP_VA_BASE) return 0;
+    base = EMU_HEAP_VA_END - asize;
+    if (base < EMU_HEAP_VA_BASE) return 0;
+    if (!A64GuestMem_MapSparse(m, base, asize)) return 0;
+    *out_base = base;
+    return 1;
+}
+
+/* UsedMemorySize contribution of the heap: bytes actually backed by frames. */
+static uint64_t HeapUsedFn(void *ctx) {
+    return A64GuestMem_SparseCommitted((const A64GuestMem *)ctx);
 }
 
 int EmuCore_Init(void) {
     if (g_inited) return 1;
-    A64GuestMem_Init(&g_mem, g_ram, sizeof(g_ram), 0);
+    A64GuestMem_Init(&g_mem, g_ram, sizeof(g_ram), EMU_CODE_BASE);
+    A64GuestMem_InitSparse(&g_mem, g_heap_map, EMU_HEAP_PAGES,
+                           g_heap_frames, sizeof(g_heap_frames),
+                           EMU_HEAP_PAGE_SIZE);
     Hle_Init(&g_hle);
     HleKernel_Init(&g_kernel);
-    HleKernel_SetSpanEnd(&g_kernel, sizeof(g_ram));
+    HleKernel_SetSpanEnd(&g_kernel, EMU_VA_END);
+    HleKernel_SetHeapMapper(&g_kernel, HeapMapFn, HeapUsedFn, &g_mem);
     HleKernel_Register(&g_hle, &g_kernel);
     A64GuestMem_Attach(&g_mem, &g_cpu);
     A64_SetSvcHandler(&g_cpu, Hle_HandleSvc, &g_hle);
@@ -111,7 +184,7 @@ int EmuCore_LoadNso(const void *data, unsigned long len) {
     memset(&g_layout, 0, sizeof(g_layout));
     if (Nso_Parse(&n, data, (uint64_t)len) != NSO_OK)
         return 0; /* status reported by caller's reason string */
-    lr = Nso_LoadIntoGuest(&n, data, (uint64_t)len, &g_mem, 0, &g_img);
+    lr = Nso_LoadIntoGuest(&n, data, (uint64_t)len, &g_mem, EMU_CODE_BASE, &g_img);
     if (lr != LOAD_OK) return 0;
 
     /* No host-side dynamic linking here. A retail module's imports live in
@@ -120,7 +193,7 @@ int EmuCore_LoadNso(const void *data, unsigned long len) {
      * program; that is reported honestly rather than papered over with stubs. */
     g_entry = g_img.entry;
     A64_Reset(&g_cpu, g_entry, 1);
-    g_cpu.sp = GuestStackTop();
+    SetupMainThread();
     g_loaded = 1;
     return 1;
 }
@@ -142,7 +215,7 @@ static void BuildKernelRegions(void) {
     uint32_t page = LAYOUT_PAGE;
 
     g_kernel.count = 0;
-    HleKernel_SetSpanEnd(&g_kernel, sizeof(g_ram));
+    HleKernel_SetSpanEnd(&g_kernel, EMU_VA_END);
 
     for (m = 0; m < g_layout.count; ++m) {
         const LayoutModule *lm = &g_layout.mod[m];
@@ -169,15 +242,23 @@ static void BuildKernelRegions(void) {
         }
     }
 
-    /* The process stack sits above the modules, growing down from the top of
-     * the guest reservation. */
+    /* The process stack sits above the modules, growing down from just below
+     * the reserved TLS page. */
     {
-        uint64_t base = (g_layout.total_size + page - 1) & ~(uint64_t)(page - 1);
-        uint64_t top  = (uint64_t)sizeof(g_ram);
+        uint64_t base = (EMU_CODE_BASE + g_layout.total_size + page - 1) &
+                        ~(uint64_t)(page - 1);
+        uint64_t top  = GuestTlsBase();
         if (top > base)
             HleKernel_AddRegion(&g_kernel, base, top - base,
                                 HLEK_MEM_STACK, HLEK_PERM_R | HLEK_PERM_W);
     }
+
+    /* The reserved TLS page at the top of the flat RAM. Reporting it keeps
+     * UsedMemorySize equal to the whole flat reservation, so the SDK's
+     * Total-Used heap sizing lands on the heap window base rather than inside
+     * the stack. */
+    HleKernel_AddRegion(&g_kernel, GuestTlsBase(), EMU_TLS_SIZE,
+                        HLEK_MEM_NORMAL, HLEK_PERM_R | HLEK_PERM_W);
 }
 
 /* Load every NSO module in a decrypted ExeFS PFS0 at its kernel-assigned base,
@@ -222,7 +303,7 @@ static int LoadExefsModules(const uint8_t *exefs, uint64_t exefs_len) {
         return 0;
     }
 
-    if (!Layout_Plan(in, n, 0, &g_layout)) {
+    if (!Layout_Plan(in, n, EMU_CODE_BASE, &g_layout)) {
         snprintf(g_last_error, sizeof(g_last_error),
                  "module layout invalid (overlap/overflow/bad segment)");
         return 0;
@@ -276,10 +357,10 @@ static int LoadExefsModules(const uint8_t *exefs, uint64_t exefs_len) {
         g_module_count++;
     }
 
-    g_entry = g_layout.entry;   /* == code_address, i.e. the rtld base */
+    g_entry = g_layout.entry;   /* == EMU_CODE_BASE, i.e. the rtld base */
     g_img.entry      = g_layout.entry;
-    g_img.image_base = 0;
-    g_img.image_end  = g_layout.total_size;
+    g_img.image_base = EMU_CODE_BASE;
+    g_img.image_end  = EMU_CODE_BASE + g_layout.total_size;
     g_img.mapped     = 0;
 
     BuildKernelRegions();
@@ -316,7 +397,7 @@ int EmuCore_LoadNsp(EmuCoreReadFn rd, void *ctx, unsigned long long nsp_size) {
      * main thread with X0=0 and a stack above the mapped modules; rtld then
      * locates, maps and relocates the remaining modules itself. */
     A64_Reset(&g_cpu, g_entry, 1);
-    g_cpu.sp = GuestStackTop();
+    SetupMainThread();
     g_cpu.x[0] = 0;
     g_cpu.x[1] = 0;
     g_loaded = 1;
@@ -359,7 +440,32 @@ uint64_t EmuCore_PC(void) {
 uint64_t EmuCore_Entry(void)      { return g_img.entry; }
 uint64_t EmuCore_InstrCount(void) { return g_cpu.icount; }
 
+void EmuCore_FaultInfo(uint64_t *addr, uint64_t *size, int *write) {
+    if (addr)  *addr  = g_cpu.fault_addr;
+    if (size)  *size  = g_cpu.fault_size;
+    if (write) *write = g_cpu.fault_write;
+}
+
+int EmuCore_FaultIsOOM(void) { return g_mem.fault_oom; }
+
+const char *EmuCore_HeapReport(void) {
+    static char line[192];
+    uint64_t committed = A64GuestMem_SparseCommitted(&g_mem);
+    snprintf(line, sizeof(line),
+             "heap base=%#llx size=%#llx committed=%llu/%llu KB budget=%llu KB",
+             (unsigned long long)g_kernel.heap_base,
+             (unsigned long long)g_kernel.heap_size,
+             (unsigned long long)(committed / 1024u),
+             (unsigned long long)(g_mem.sp_frame_cap * EMU_HEAP_PAGE_SIZE / 1024u),
+             (unsigned long long)(sizeof(g_heap_frames) / 1024u));
+    return line;
+}
+
 uint64_t EmuCore_LastSvc(void) { return g_hle.last_unknown; }
+
+/* Debug: PC of the instruction that first drove sp to (near) zero during the
+ * last run (0 if sp never collapsed). Used to diagnose stack corruption. */
+uint64_t EmuCore_SpZeroPc(void) { return g_cpu.sp_zero_pc; }
 
 const char *EmuCore_LastSvcName(void) {
     static char line[32];
@@ -368,6 +474,71 @@ const char *EmuCore_LastSvcName(void) {
     if (nm[0] != '?') return nm;
     snprintf(line, sizeof(line), "syscall 0x%llx", (unsigned long long)svc);
     return line;
+}
+
+int EmuCore_QueryTrace(EmuQueryProbe *out, int max) {
+    int n, i, got = 0;
+    if (!out || max <= 0 || !g_inited) return 0;
+    n = HleKernel_QueryTraceCount(&g_kernel);
+    if (n > max) n = max;
+    for (i = 0; i < n; ++i) {
+        HleKernelQuery q;
+        if (!HleKernel_QueryTraceAt(&g_kernel, i, &q)) break;
+        out[got].addr   = q.addr;
+        out[got].base   = q.base;
+        out[got].size   = q.size;
+        out[got].type   = q.type;
+        out[got].perm   = q.perm;
+        out[got].verdict = HleKernel_QueryVerdict(&q);
+        ++got;
+    }
+    return got;
+}
+
+int EmuCore_IpcTrace(EmuIpcTrace *out, int max) {
+    int n, i, got = 0;
+    if (!out || max <= 0) return 0;
+    n = HleIpc_TraceCount();
+    if (n > max) n = max;
+    for (i = 0; i < n; ++i) {
+        HleIpcTrace t;
+        if (!HleIpc_TraceAt(i, &t)) break;
+        out[got].handle = t.handle;
+        memcpy(out[got].name, t.name, sizeof(out[got].name));
+        out[got].type = t.type;
+        out[got].cmd = t.cmd;
+        out[got].is_sm = t.is_sm;
+        out[got].handled = t.handled;
+        memcpy(out[got].note, t.note, sizeof(out[got].note));
+        ++got;
+    }
+    return got;
+}
+
+void EmuCore_LastSvcArgs(unsigned long long out[8]) {
+    int i;
+    if (!out) return;
+    for (i = 0; i < 8; ++i) out[i] = g_hle.last_args[i];
+}
+
+/* Full register snapshot for debugging a stop: out[0..30]=x0..x30,
+ * out[31]=sp, out[32]=pc (the same pc EmuCore_PC reports). */
+void EmuCore_DumpRegs(unsigned long long out[33]) {
+    int i;
+    if (!out) return;
+    for (i = 0; i < 31; ++i) out[i] = A64_GetX(&g_cpu, (unsigned)i);
+    out[31] = g_cpu.sp;
+    out[32] = EmuCore_PC();
+}
+
+unsigned long EmuCore_ReadGuest(uint64_t addr, void *buf, unsigned long len) {
+    if (!g_inited || !buf || len == 0) return 0;
+    if (!A64GuestMem_Read(&g_mem, addr, buf, (size_t)len)) return 0;
+    return len;
+}
+
+const char *EmuCore_SessionName(uint64_t handle) {
+    return HleKernel_SessionName(&g_kernel, handle);
 }
 
 const char *EmuCore_RelocReport(void) {

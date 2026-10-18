@@ -220,7 +220,7 @@ jobs:
               -I eden/source -I eden/source/core \
               eden/tests/test_emucore.c eden/source/core/emucore.c \
               eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
-              emucore/hle/hle.c emucore/hle/kernel.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/hle/ipc.c emucore/loader/pfs0.c emucore/loader/nso.c \
               emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/layout.c \
               emucore/loader/nca.c emucore/loader/keys.c emucore/crypto/aes.c \
               -o /tmp/test_emucore
@@ -238,8 +238,25 @@ jobs:
           set -e
           gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/hle \
               eden/tests/test_kernel.c emucore/a64/a64.c emucore/a64/a64_mem.c \
-              emucore/hle/hle.c emucore/hle/kernel.c -o /tmp/test_kernel
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/hle/ipc.c -o /tmp/test_kernel
           /tmp/test_kernel
+
+      - name: "Host test (nvdrv service HLE: HIPC descriptors + Open/Close)"
+        # Drives the nvdrv CMIF dispatcher through the real IPC path: Initialize
+        # and SetAruid are acknowledged, Open allocates an honest fd for known
+        # device paths (including buffers that are NOT NUL-terminated, as the
+        # SDK sends `strlen(path)` bytes), unknown devices return
+        # NV_FILE_OPERATION_FAILED (0x30003), malformed/out-of-range descriptors
+        # return NV_BAD_PARAMETER (0x4), Close validates live/unknown handles, and
+        # the first GPU ioctl stays unhandled and is reported verbatim (fd,
+        # device, iocode, descriptor sizes/addresses) so the guest halts honestly
+        # rather than receiving a faked result.
+        run: |
+          set -e
+          gcc -std=c99 -Wall -Wextra -O1 -I emucore/a64 -I emucore/hle \
+              eden/tests/test_nvdrv.c emucore/a64/a64.c emucore/a64/a64_mem.c \
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/hle/ipc.c -o /tmp/test_nvdrv
+          /tmp/test_nvdrv
 
       - name: "Host test (synthetic NSO report: entry, icount, halt, SVC, faults)"
         # Loads synthetic NSO images through the real loaders and prints the exact
@@ -294,13 +311,13 @@ jobs:
               -I emucore/crypto -I eden/source -I eden/source/core \
               eden/tests/test_emucore.c eden/source/core/emucore.c \
               eden/source/a64_test_entry.c emucore/a64/a64.c emucore/a64/a64_mem.c \
-              emucore/hle/hle.c emucore/hle/kernel.c emucore/loader/pfs0.c emucore/loader/nso.c \
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/hle/ipc.c emucore/loader/pfs0.c emucore/loader/nso.c \
               emucore/loader/loader.c emucore/loader/mod0.c emucore/loader/layout.c \
               emucore/loader/nca.c emucore/loader/keys.c emucore/crypto/aes.c \
               -o /tmp/test_emucore_ppc && qemu-ppc /tmp/test_emucore_ppc
           $PPC -I emucore/a64 -I emucore/hle \
               eden/tests/test_kernel.c emucore/a64/a64.c emucore/a64/a64_mem.c \
-              emucore/hle/hle.c emucore/hle/kernel.c -o /tmp/test_kernel_ppc && qemu-ppc /tmp/test_kernel_ppc
+              emucore/hle/hle.c emucore/hle/kernel.c emucore/hle/ipc.c -o /tmp/test_kernel_ppc && qemu-ppc /tmp/test_kernel_ppc
           $PPC -I emucore/a64 -I emucore/hle -I emucore/loader \
               eden/tests/nso_report.c emucore/a64/a64.c emucore/a64/a64_mem.c \
               emucore/hle/hle.c emucore/loader/pfs0.c emucore/loader/nso.c \

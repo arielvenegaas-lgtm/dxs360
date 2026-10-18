@@ -1,6 +1,8 @@
 /* a64.c: portable AArch64 interpreter. See a64.h. */
 #include "a64.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -266,6 +268,21 @@ static int LoadLE(A64 *c, uint64_t addr, uint64_t *out, int nbytes) {
 static int StoreLE(A64 *c, uint64_t addr, uint64_t v, int nbytes) {
     uint8_t b[8];
     for (int i = 0; i < nbytes; ++i) b[i] = (uint8_t)(v >> (8 * i));
+    { /* TEMP debug: EDEN_WATCH=lo:hi logs stores into [lo,hi). */
+        static int winit = 0; static uint64_t wlo = 0, whi = 0; static long wcount = 0;
+        if (!winit) {
+            const char *e = getenv("EDEN_WATCH");
+            if (e) { const char *cp = strchr(e, ':'); wlo = strtoull(e, NULL, 0); if (cp) whi = strtoull(cp + 1, NULL, 0); }
+            winit = 1;
+        }
+        if (whi > wlo && addr < whi && addr + (uint64_t)nbytes > wlo && wcount < 200) {
+            fprintf(stderr, "WATCH pc=0x%llx st=0x%llx v=0x%llx n=%d x30=0x%llx x29=0x%llx\n",
+                    (unsigned long long)(c->pc - 4), (unsigned long long)addr,
+                    (unsigned long long)v, nbytes,
+                    (unsigned long long)c->x[30], (unsigned long long)c->x[29]);
+            ++wcount;
+        }
+    }
     return MemWrite(c, addr, b, (size_t)nbytes);
 }
 
@@ -412,12 +429,24 @@ static void DoDPI(A64 *c, uint32_t insn, uint64_t pc) {
 
 /* ====================== data processing -- register ==================== */
 
+/* Add/Sub destination semantics: when the instruction sets flags (S=1) and
+ * Rd is 31, the result is DISCARDED (that is what makes CMP/CMN/TST work) --
+ * it must never touch sp. When S=0, Rd 31 is the stack pointer. */
+static void AddSubWriteRd(A64 *c, unsigned S, unsigned Rd, uint64_t result,
+                          int regsize) {
+    if (S && Rd == 31) return;
+    if (regsize == 32) WriteWSp(c, Rd, (uint32_t)result);
+    else                WriteXSp(c, Rd, result);
+}
+
 static void DoAddSubShifted(A64 *c, uint32_t insn, uint64_t pc) {
     unsigned sf = Field(insn, 31, 31), op = Field(insn, 30, 30), S = Field(insn, 29, 29);
     unsigned shift = Field(insn, 23, 22), Rm = Field(insn, 20, 16), imm6 = Field(insn, 15, 10);
     unsigned Rn = Field(insn, 9, 5), Rd = Field(insn, 4, 0);
     int regsize = sf ? 64 : 32;
     if (!sf && (imm6 >> 5)) { Undef(c, pc); return; }
+    /* Shifted-register form: register 31 is XZR, never SP (SP is only
+     * encodable in the extended/immediate forms). */
     uint64_t a = ReadX(c, Rn);
     uint64_t b = ShiftVal(ReadX(c, Rm), shift, imm6, regsize);
     uint32_t saved = c->nzcv;
@@ -462,7 +491,7 @@ static void DoAddSubExtended(A64 *c, uint32_t insn, uint64_t pc) {
     uint64_t result = op ? AddWithCarry(c, a, ~b, 1, regsize) : AddWithCarry(c, a, b, 0, regsize);
     if (!S) c->nzcv = saved;
     if (regsize == 32) result &= 0xFFFFFFFFu;
-    if (regsize == 32) WriteWSp(c, Rd, (uint32_t)result); else WriteXSp(c, Rd, result);
+    AddSubWriteRd(c, S, Rd, result, regsize);
 }
 
 static void DoAddSubCarry(A64 *c, uint32_t insn, uint64_t pc) {
@@ -497,13 +526,16 @@ static void DoCondSelect(A64 *c, uint32_t insn, uint64_t pc) {
 }
 
 static void DoCondCompare(A64 *c, uint32_t insn, uint64_t pc) {
-    unsigned sf = Field(insn, 31, 31), op = Field(insn, 30, 30), Rm = Field(insn, 20, 16);
-    unsigned cond = Field(insn, 15, 12), o2 = Field(insn, 10, 10), Rn = Field(insn, 9, 5);
+    unsigned sf = Field(insn, 31, 31), op = Field(insn, 30, 30);
+    unsigned imm_form = Field(insn, 11, 11);            /* 1 = CCMP/CCMN #imm5 */
+    unsigned operand = Field(insn, 20, 16);             /* Rm or imm5 */
+    unsigned cond = Field(insn, 15, 12), Rn = Field(insn, 9, 5);
     unsigned nzcv_imm = Field(insn, 3, 0);
     int regsize = sf ? 64 : 32;
-    if (o2 != 0) { Undef(c, pc); return; }
+    (void)pc;
     if (CondCheck(c->nzcv, cond)) {
-        uint64_t a = ReadX(c, Rn), b = ReadX(c, Rm);
+        uint64_t a = ReadX(c, Rn);
+        uint64_t b = imm_form ? (uint64_t)operand : ReadX(c, operand);
         if (op == 0) AddWithCarry(c, a, b, 0, regsize);
         else AddWithCarry(c, a, ~b, 1, regsize);
     } else {
@@ -775,6 +807,13 @@ static void VSetElem(A64 *c, unsigned n, unsigned size, unsigned idx, uint64_t v
                         ((val & mask) << (off & 63));
 }
 
+static uint64_t VGetElem(A64 *c, unsigned n, unsigned size, unsigned idx) {
+    unsigned bits = VEBits(size);
+    unsigned off = idx * bits;
+    uint64_t mask = (bits >= 64) ? ~0ull : ((1ull << bits) - 1);
+    return (c->v[n][off >> 6] >> (off & 63)) & mask;
+}
+
 /* Number of active elements for an arrangement of `size` lanes at width Q. */
 static unsigned VLanes(unsigned size, unsigned Q) {
     return (Q ? 128u : 64u) / VEBits(size);
@@ -881,7 +920,57 @@ static void DoSimdPair(A64 *c, uint32_t insn, uint64_t pc) {
     if (index == 1 || index == 3) WriteXSp(c, Rn, (uint64_t)((int64_t)base + offset));
 }
 
+/* ---- scalar FP helpers ---- */
+
+static float FBitsToF32(uint64_t u) { float f; uint32_t v = (uint32_t)u; memcpy(&f, &v, 4); return f; }
+static uint64_t F32ToFBits(float f) { uint32_t v; memcpy(&v, &f, 4); return (uint64_t)v; }
+static double FBitsToF64(uint64_t u) { double d; memcpy(&d, &u, 8); return d; }
+static uint64_t F64ToFBits(double d) { uint64_t u; memcpy(&u, &d, 8); return u; }
+static float FMaxNum(float a, float b) { return (a > b) ? a : b; }
+static float FMinNum(float a, float b) { return (a < b) ? a : b; }
+static double DMaxNum(double a, double b) { return (a > b) ? a : b; }
+static double DMinNum(double a, double b) { return (a < b) ? a : b; }
+
 /* ---- Advanced SIMD data processing ---- */
+
+/* AdvSIMDExpandImm (ARM ARM): expand the 8-bit modified immediate to 64 bits. */
+static uint64_t AdvSimdExpandImmBits(unsigned op, unsigned cmode, unsigned imm8) {
+    uint64_t v = 0;
+    unsigned i;
+    switch (cmode >> 1) {
+    case 0: v = (uint64_t)(uint32_t)imm8;            v |= v << 32; break;
+    case 1: v = (uint64_t)(uint32_t)(imm8 << 8);     v |= v << 32; break;
+    case 2: v = (uint64_t)(uint32_t)(imm8 << 16);    v |= v << 32; break;
+    case 3: v = (uint64_t)(uint32_t)(imm8 << 24);    v |= v << 32; break;
+    case 4: v = (uint64_t)(uint16_t)(imm8 << 8);     v |= v << 16; v |= v << 32; break;
+    case 5: v = (uint64_t)(uint16_t)imm8;            v |= v << 16; v |= v << 32; break;
+    case 6:
+        v = (uint64_t)(uint32_t)(((cmode & 1u) == 0) ? ((imm8 << 8) | 0xffu)
+                                                     : ((imm8 << 16) | 0xffffu));
+        v |= v << 32;
+        break;
+    case 7:
+        if ((cmode & 1u) == 0 && op == 0) {          /* 8-bit broadcast */
+            for (i = 0; i < 8; ++i) v |= (uint64_t)imm8 << (8 * i);
+        } else if ((cmode & 1u) == 0 && op == 1) {    /* 64-bit, bit-replicated bytes */
+            for (i = 0; i < 8; ++i) {
+                unsigned bit = (imm8 >> (7 - i)) & 1u;
+                v |= (uint64_t)(bit ? 0xFFu : 0u) << (8 * i);
+            }
+        } else if ((cmode & 1u) == 1 && op == 0) {    /* F32 */
+            unsigned s = (imm8 >> 7) & 1u, e6 = (imm8 >> 6) & 1u;
+            uint32_t f = ((uint32_t)s << 31) | ((uint32_t)(e6 ^ 1u) << 30) |
+                         (e6 ? (0x1Fu << 25) : 0u) | ((uint32_t)(imm8 & 0x3Fu) << 19);
+            v = (uint64_t)f; v |= v << 32;
+        } else {                                       /* F64 */
+            unsigned s = (imm8 >> 7) & 1u, e6 = (imm8 >> 6) & 1u;
+            v = ((uint64_t)s << 63) | ((uint64_t)(e6 ^ 1u) << 62) |
+                (e6 ? (0xFFull << 54) : 0ull) | ((uint64_t)(imm8 & 0x3Fu) << 48);
+        }
+        break;
+    }
+    return v;
+}
 
 static void DoSimd(A64 *c, uint32_t insn, uint64_t pc) {
     unsigned Q = Field(insn, 30, 30);
@@ -904,6 +993,264 @@ static void DoSimd(A64 *c, uint32_t insn, uint64_t pc) {
         if (!Q) c->v[Rd][1] = 0;
         (void)idx;
         return;
+    }
+
+    /* FMOV (scalar, general <-> FP). */
+    if ((insn & 0xFFFFFC00u) == 0x9E670000u) {   /* FMOV Dd, Xn */
+        c->v[Field(insn, 4, 0)][0] = ReadX(c, Field(insn, 9, 5));
+        c->v[Field(insn, 4, 0)][1] = 0;
+        return;
+    }
+    if ((insn & 0xFFFFFC00u) == 0x9E660000u) {   /* FMOV Xd, Dn */
+        WriteX(c, Field(insn, 4, 0), c->v[Field(insn, 9, 5)][0]);
+        return;
+    }
+    if ((insn & 0xFFFFFC00u) == 0x1E270000u) {   /* FMOV Sd, Wn */
+        c->v[Field(insn, 4, 0)][0] = (uint32_t)ReadX(c, Field(insn, 9, 5));
+        c->v[Field(insn, 4, 0)][1] = 0;
+        return;
+    }
+    if ((insn & 0xFFFFFC00u) == 0x1E260000u) {   /* FMOV Wd, Sn */
+        WriteX(c, Field(insn, 4, 0), (uint32_t)c->v[Field(insn, 9, 5)][0]);
+        return;
+    }
+
+    /* INS / MOV (to vector element, from general): imm5 selects size/lane. */
+    if ((insn & 0xBFE0FC00u) == 0x0E001C00u) {
+        unsigned imm5 = Field(insn, 20, 16);
+        unsigned Rn = Field(insn, 9, 5), Rd = Field(insn, 4, 0);
+        unsigned size, idx;
+        if (imm5 & 1) { size = 0; idx = (imm5 >> 1) & 0xF; }
+        else if (imm5 & 2) { size = 1; idx = (imm5 >> 2) & 0x7; }
+        else if (imm5 & 4) { size = 2; idx = (imm5 >> 3) & 0x3; }
+        else if (imm5 & 8) { size = 3; idx = (imm5 >> 4) & 0x1; }
+        else { Undef(c, pc); return; }
+        VSetElem(c, Rd, size, idx, ReadX(c, Rn));
+        return;
+    }
+
+    /* FMOV (scalar, immediate): 0 0 0 11110 ftype 1 imm8 10000000 Rd. */
+    if ((insn & 0xFF000000u) == 0x1E000000u &&
+        (insn & 0x00001FE0u) == 0x00001000u) {
+        unsigned ftype = Field(insn, 23, 22);
+        unsigned Rd = Field(insn, 4, 0);
+        unsigned imm8 = Field(insn, 20, 13);
+        unsigned b6 = (imm8 >> 6) & 1u, b7 = (imm8 >> 7) & 1u;
+        if (ftype == 0) {              /* single */
+            uint64_t imm = (b7 ? 0x8000u : 0u) | (b6 ? 0x3E00u : 0x4000u)
+                         | ((uint64_t)(imm8 & 0x3Fu) << 3);
+            VWriteScalar(c, Rd, 32, (uint32_t)(imm << 16));
+            return;
+        } else if (ftype == 1) {       /* double */
+            uint64_t imm = (b7 ? 0x8000ull : 0ull) | (b6 ? 0x3FC0ull : 0x4000ull)
+                         | (uint64_t)(imm8 & 0x3Fu);
+            VWriteScalar(c, Rd, 64, imm << 48);
+            return;
+        } else if (ftype == 3) {       /* half */
+            uint64_t imm = (b7 ? 0x8000u : 0u) | (b6 ? 0x3000u : 0x4000u)
+                         | ((uint64_t)(imm8 & 0x3Fu) << 6);
+            VWriteScalar(c, Rd, 16, (uint16_t)imm);
+            return;
+        }
+    }
+
+    /* Advanced SIMD three same: 0 Q U 01110 size 1 Rm opcode 1 Rn Rd. */
+    if (Field(insn, 31, 31) == 0 && Field(insn, 28, 24) == 0x0E &&
+        Field(insn, 21, 21) == 1 && Field(insn, 10, 10) == 1) {
+        unsigned Q = Field(insn, 30, 30), U = Field(insn, 29, 29);
+        unsigned size = Field(insn, 23, 22);
+        unsigned Rm = Field(insn, 20, 16), opcode = Field(insn, 15, 11);
+        unsigned Rn = Field(insn, 9, 5), Rd = Field(insn, 4, 0);
+        unsigned ebits = VEBits(size);
+        uint64_t emask = (ebits >= 64) ? ~0ull : ((1ull << ebits) - 1);
+
+        if (opcode == 0x03u) {                        /* logical (U,size select op) */
+            uint64_t a = c->v[Rn][0], b = c->v[Rm][0], d = c->v[Rd][0];
+            uint64_t a1 = c->v[Rn][1], b1 = c->v[Rm][1], d1 = c->v[Rd][1];
+            uint64_t r0, r1;
+            switch ((U << 2) | size) {
+                case 0: r0 = a & b;      r1 = a1 & b1;      break; /* AND */
+                case 1: r0 = a & ~b;     r1 = a1 & ~b1;     break; /* BIC */
+                case 2: r0 = a | b;      r1 = a1 | b1;      break; /* ORR */
+                case 3: r0 = a | ~b;     r1 = a1 | ~b1;     break; /* ORN */
+                case 4: r0 = a ^ b;      r1 = a1 ^ b1;      break; /* EOR */
+                case 5: r0 = (d & ~b) | (a & b); r1 = (d1 & ~b1) | (a1 & b1); break; /* BSL */
+                case 6: r0 = (d & b) | (a & ~b); r1 = (d1 & b1) | (a1 & ~b1); break; /* BIT */
+                default: r0 = (d & ~b) | (a & b); r1 = (d1 & ~b1) | (a1 & b1); break; /* BIF */
+            }
+            c->v[Rd][0] = r0; c->v[Rd][1] = Q ? r1 : 0;
+            return;
+        } else if (opcode == 0x10u || opcode == 0x11u || opcode == 0x13u) {
+            /* 0x10 ADD/SUB, 0x11 CMEQ/CMTST, 0x13 MUL. */
+            unsigned lanes = VLanes(size, Q);
+            uint64_t r0 = 0, r1 = 0;
+            for (unsigned i = 0; i < lanes; ++i) {
+                uint64_t ea = VGetElem(c, Rn, size, i);
+                uint64_t eb = VGetElem(c, Rm, size, i), er;
+                if (opcode == 0x10u)      er = U ? (ea - eb) : (ea + eb);
+                else if (opcode == 0x13u) er = ea * eb;
+                else /* 0x11 */           er = (U ? (ea == eb) : ((ea & eb) != 0)) ? emask : 0;
+                er &= emask;
+                unsigned off = i * ebits;
+                if (off < 64) r0 |= er << off; else r1 |= er << (off - 64);
+            }
+            c->v[Rd][0] = r0; c->v[Rd][1] = r1;
+            return;
+        }
+    }
+
+    /* AdvSIMD modified immediate: MOVI/MVNI/ORR/BIC/FMOV.
+     * 0 Q op 01111 00000 abc cmode 01 defgh Rd  (bits[28:24]=01111,[11:10]=01). */
+    if (Field(insn, 31, 31) == 0 && Field(insn, 28, 24) == 0x0F &&
+        Field(insn, 11, 10) == 0x01) {
+        unsigned op = Field(insn, 29, 29);
+        unsigned cmode = Field(insn, 15, 12);
+        unsigned imm8 = (Field(insn, 18, 16) << 5) | Field(insn, 9, 5);
+        unsigned Rd = Field(insn, 4, 0);
+        unsigned kind; /* 0 MOVI, 1 MVNI, 2 ORR, 3 BIC, 4 FMOV */
+        uint64_t imm = AdvSimdExpandImmBits(op, cmode, imm8);
+        uint64_t result;
+        if (cmode < 12)       kind = ((cmode & 1u) == 0) ? (op ? 1u : 0u)
+                                                         : (op ? 3u : 2u);
+        else if (cmode < 14)  kind = op ? 1u : 0u;
+        else if (cmode == 14) kind = 0u;
+        else                  kind = op ? 4u : 0u;
+        if (kind == 4u) {                 /* FMOV Dd, #imm (scalar) */
+            c->v[Rd][0] = imm; c->v[Rd][1] = 0;
+            return;
+        }
+        if (kind == 0u)      result = imm;
+        else if (kind == 1u) result = ~imm;
+        else if (kind == 2u) result = c->v[Rd][0] | imm;
+        else                 result = c->v[Rd][0] & ~imm;
+        c->v[Rd][0] = result;
+        c->v[Rd][1] = Q ? result : 0;
+        return;
+    }
+
+    /* Scalar FP data-processing (1/2 source), compare, FP<->int conversion.
+     * Shared: bits[31:24]=0x1E, bit21=1; type = bits[23:22]. */
+    if ((insn & 0xFF000000u) == 0x1E000000u && Field(insn, 21, 21) == 1u &&
+        Field(insn, 23, 22) != 2u) {
+        unsigned type = Field(insn, 23, 22);
+        unsigned Rn = Field(insn, 9, 5), Rd = Field(insn, 4, 0);
+
+        if (Field(insn, 11, 10) == 0x2u) {            /* 2-source */
+            unsigned Rm = Field(insn, 20, 16), op = Field(insn, 15, 12);
+            if (type == 0) {
+                float a = FBitsToF32(c->v[Rn][0]), b = FBitsToF32(c->v[Rm][0]), r;
+                switch (op) {
+                    case 0x0: r = a * b; break;
+                    case 0x1: r = a / b; break;
+                    case 0x2: r = a + b; break;
+                    case 0x3: r = a - b; break;
+                    case 0x4: r = FMaxNum(a, b); break;
+                    case 0x5: r = FMinNum(a, b); break;
+                    case 0x6: r = FMaxNum(a, b); break;
+                    case 0x7: r = FMinNum(a, b); break;
+                    case 0x8: r = -(a * b); break;
+                    default: Unimpl(c, pc); return;
+                }
+                c->v[Rd][0] = F32ToFBits(r); c->v[Rd][1] = 0;
+                return;
+            } else if (type == 1) {
+                double a = FBitsToF64(c->v[Rn][0]), b = FBitsToF64(c->v[Rm][0]), r;
+                switch (op) {
+                    case 0x0: r = a * b; break;
+                    case 0x1: r = a / b; break;
+                    case 0x2: r = a + b; break;
+                    case 0x3: r = a - b; break;
+                    case 0x4: r = DMaxNum(a, b); break;
+                    case 0x5: r = DMinNum(a, b); break;
+                    case 0x6: r = DMaxNum(a, b); break;
+                    case 0x7: r = DMinNum(a, b); break;
+                    case 0x8: r = -(a * b); break;
+                    default: Unimpl(c, pc); return;
+                }
+                c->v[Rd][0] = F64ToFBits(r); c->v[Rd][1] = 0;
+                return;
+            }
+        } else if (Field(insn, 14, 10) == 0x10u) {    /* 1-source */
+            unsigned op2 = Field(insn, 20, 15);
+            if (type == 0) {
+                float a = FBitsToF32(c->v[Rn][0]), r;
+                switch (op2) {
+                    case 0x00: r = a; break;                          /* FMOV */
+                    case 0x01: r = (a < 0) ? -a : a; break;           /* FABS */
+                    case 0x02: r = -a; break;                         /* FNEG */
+                    default: Unimpl(c, pc); return;
+                }
+                c->v[Rd][0] = F32ToFBits(r); c->v[Rd][1] = 0;
+                return;
+            } else if (type == 1) {
+                double a = FBitsToF64(c->v[Rn][0]), r;
+                switch (op2) {
+                    case 0x00: r = a; break;
+                    case 0x01: r = (a < 0) ? -a : a; break;
+                    case 0x02: r = -a; break;
+                    default: Unimpl(c, pc); return;
+                }
+                c->v[Rd][0] = F64ToFBits(r); c->v[Rd][1] = 0;
+                return;
+            }
+        } else if (Field(insn, 15, 10) == 0x08u) {    /* FCMP / FCMPE */
+            unsigned op2 = Field(insn, 4, 0);
+            unsigned zero = (op2 >> 3) & 1u;
+            unsigned Rm = Field(insn, 20, 16);
+            int n = 0, z = 0, cc = 0, vv = 0;
+            if (type == 0) {
+                float a = FBitsToF32(c->v[Rn][0]);
+                float b = zero ? 0.0f : FBitsToF32(c->v[Rm][0]);
+                if (a != a || (!zero && b != b)) { cc = 1; vv = 1; }
+                else if (a == b) { z = 1; cc = 1; }
+                else if (a < b) { n = 1; }
+                else { cc = 1; }
+            } else if (type == 1) {
+                double a = FBitsToF64(c->v[Rn][0]);
+                double b = zero ? 0.0 : FBitsToF64(c->v[Rm][0]);
+                if (a != a || (!zero && b != b)) { cc = 1; vv = 1; }
+                else if (a == b) { z = 1; cc = 1; }
+                else if (a < b) { n = 1; }
+                else { cc = 1; }
+            } else { Unimpl(c, pc); return; }
+            c->nzcv = (n ? A64_NZCV_N : 0) | (z ? A64_NZCV_Z : 0) |
+                      (cc ? A64_NZCV_C : 0) | (vv ? A64_NZCV_V : 0);
+            return;
+        } else if (Field(insn, 15, 10) == 0x00u) {    /* FP<->int conversion */
+            unsigned rmode = Field(insn, 20, 19), opc = Field(insn, 18, 16);
+            unsigned sf = Field(insn, 31, 31);
+            if (opc == 0u || opc == 1u) {             /* FCVTZS / FCVTZU */
+                (void)rmode;                          /* truncation (toward zero) */
+                if (type == 0) {
+                    float a = FBitsToF32(c->v[Rn][0]);
+                    if (opc == 0u) { int64_t r = (int64_t)a;
+                        WriteX(c, Rd, sf ? (uint64_t)r : (uint64_t)(int64_t)(int32_t)r); }
+                    else { uint64_t r = (uint64_t)a;
+                        WriteX(c, Rd, sf ? r : (uint64_t)(uint32_t)r); }
+                } else if (type == 1) {
+                    double a = FBitsToF64(c->v[Rn][0]);
+                    if (opc == 0u) { int64_t r = (int64_t)a;
+                        WriteX(c, Rd, sf ? (uint64_t)r : (uint64_t)(int64_t)(int32_t)r); }
+                    else { uint64_t r = (uint64_t)a;
+                        WriteX(c, Rd, sf ? r : (uint64_t)(uint32_t)r); }
+                } else { Unimpl(c, pc); return; }
+                return;
+            } else if (opc == 2u || opc == 3u) {      /* SCVTF / UCVTF */
+                uint64_t src = ReadX(c, Rn);
+                if (type == 0) {
+                    float r = (opc == 2u)
+                        ? (float)(sf ? (int64_t)src : (int64_t)(int32_t)(uint32_t)src)
+                        : (float)(sf ? src : (uint64_t)(uint32_t)src);
+                    c->v[Rd][0] = F32ToFBits(r); c->v[Rd][1] = 0;
+                } else if (type == 1) {
+                    double r = (opc == 2u)
+                        ? (double)(sf ? (int64_t)src : (int64_t)(int32_t)(uint32_t)src)
+                        : (double)(sf ? src : (uint64_t)(uint32_t)src);
+                    c->v[Rd][0] = F64ToFBits(r); c->v[Rd][1] = 0;
+                } else { Unimpl(c, pc); return; }
+                return;
+            }
+        }
     }
 
     Unimpl(c, pc);
@@ -932,6 +1279,13 @@ static void DoSystem(A64 *c, uint32_t insn, uint64_t pc) {
     if (L == 0 && op0 == 0 && CRn == 4) { return; } /* MSR immediate (PSTATE) */
     /* Hints + barriers (op0=0, op1=3): NOP/YIELD/WFE/WFI/SEV, DSB/DMB/ISB. */
     if (op0 == 0 && op1 == 3) { return; }
+    /* Thread pointers: TPIDR_EL0 (op2=2), TPIDRRO_EL0 (op2=3). */
+    if (op0 == 3 && op1 == 3 && CRn == 13 && CRm == 0 && (op2 == 2 || op2 == 3)) {
+        uint64_t *reg = (op2 == 2) ? &c->tpidr_el0 : &c->tpidrro_el0;
+        if (L) WriteX(c, Rt, *reg);
+        else   *reg = ReadX(c, Rt);
+        return;
+    }
     /* Track a handful of system registers by encoding. */
     unsigned key = ((op0 & 3) << 4) | ((CRn & 0xF) ^ (CRm & 0xF) ^ (op2 & 7));
     key &= 63;
@@ -1042,6 +1396,7 @@ void A64_Reset(A64 *c, uint64_t pc, int reset_regs) {
         c->sp = 0;
         c->nzcv = 0;
         c->fpcr = c->fpsr = 0;
+        c->tpidr_el0 = c->tpidrro_el0 = 0;
         memset(c->sysregs, 0, sizeof(c->sysregs));
     }
     c->pc = pc;
@@ -1052,6 +1407,8 @@ void A64_Reset(A64 *c, uint64_t pc, int reset_regs) {
     c->undefined_pc = 0;
     c->svc_imm = 0;
     c->icount = 0;
+    c->sp_zero_pc = 0;
+    c->sp_prev = 0;
 }
 
 void A64_SetSvcHandler(A64 *c, A64SvcFn fn, void *ctx) {
@@ -1075,17 +1432,92 @@ const char *A64_HaltName(A64Halt halt) {
 
 A64Halt A64_Step(A64 *c) {
     uint64_t insn_le = 0;
+    uint64_t prev_sp;
     if (!LoadLE(c, c->pc, &insn_le, 4)) return c->halt;
     uint32_t insn = (uint32_t)insn_le;
     uint64_t pc = c->pc;
     c->pc = pc + 4;
     c->halt = A64_OK;
+    prev_sp = c->sp;
     if (c->on_insn && !c->on_insn(c->insn_ctx, c, pc, insn)) {
         c->halt = A64_HALT_STEPLIMIT;
         return c->halt;
     }
+    { /* TEMP debug: A64_TRACE=lo-hi (hex) logs each step in range. */
+        static int inited = 0; static unsigned long long lo = 0, hi = 0;
+        if (!inited) {
+            const char *e = getenv("A64_TRACE");
+            if (e) sscanf(e, "%llx-%llx", &lo, &hi);
+            inited = 1;
+        }
+        if (lo && pc >= lo && pc <= hi)
+            fprintf(stderr, "pc=0x%llx insn=0x%08x x9=0x%llx x10=0x%llx x11=0x%llx x12=0x%llx x13=0x%llx x14=0x%llx\n",
+                    (unsigned long long)pc, insn,
+                    (unsigned long long)c->x[9], (unsigned long long)c->x[10],
+                    (unsigned long long)c->x[11], (unsigned long long)c->x[12],
+                    (unsigned long long)c->x[13], (unsigned long long)c->x[14]);
+    }
+    { /* TEMP debug: EDEN_TRAP=addr[,addr...] (hex) logs regs on hit. */
+        static int tinit = 0; static unsigned long long trap[16]; static int ntrap = 0;
+        if (!tinit) {
+            const char *e = getenv("EDEN_TRAP");
+            if (e) {
+                const char *p = e;
+                while (*p && ntrap < 16) {
+                    trap[ntrap++] = strtoull(p, (char **)&p, 16);
+                    while (*p == ',' || *p == ' ') ++p;
+                }
+            }
+            tinit = 1;
+        }
+        {
+            int ti;
+            for (ti = 0; ti < ntrap; ++ti)
+                if (pc == trap[ti])
+                    fprintf(stderr, "TRAP pc=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x8=0x%llx x9=0x%llx x19=0x%llx x29=0x%llx x30=0x%llx sp=0x%llx\n",
+                            (unsigned long long)pc,
+                            (unsigned long long)c->x[0], (unsigned long long)c->x[1],
+                            (unsigned long long)c->x[2], (unsigned long long)c->x[3],
+                            (unsigned long long)c->x[8], (unsigned long long)c->x[9],
+                            (unsigned long long)c->x[19], (unsigned long long)c->x[29],
+                            (unsigned long long)c->x[30], (unsigned long long)c->sp);
+        }
+    }
+    { /* TEMP debug: EDEN_LOG_PC=addr[,addr...] (hex) logs regs and continues. */
+        static int linit = 0; static unsigned long long lpc[16]; static int nlpc = 0;
+        if (!linit) {
+            const char *e = getenv("EDEN_LOG_PC");
+            if (e) {
+                const char *p = e;
+                while (*p && nlpc < 16) {
+                    lpc[nlpc++] = strtoull(p, (char **)&p, 16);
+                    while (*p == ',' || *p == ' ') ++p;
+                }
+            }
+            linit = 1;
+        }
+        {
+            int li;
+            for (li = 0; li < nlpc; ++li)
+                if (pc == lpc[li])
+                    fprintf(stderr, "LOGPC pc=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x8=0x%llx x9=0x%llx x10=0x%llx x11=0x%llx x19=0x%llx x20=0x%llx x21=0x%llx x22=0x%llx x29=0x%llx x30=0x%llx sp=0x%llx\n",
+                            (unsigned long long)pc,
+                            (unsigned long long)c->x[0], (unsigned long long)c->x[1],
+                            (unsigned long long)c->x[2], (unsigned long long)c->x[3],
+                            (unsigned long long)c->x[8], (unsigned long long)c->x[9],
+                            (unsigned long long)c->x[10], (unsigned long long)c->x[11],
+                            (unsigned long long)c->x[19],
+                            (unsigned long long)c->x[20], (unsigned long long)c->x[21],
+                            (unsigned long long)c->x[22],
+                            (unsigned long long)c->x[29], (unsigned long long)c->x[30],
+                            (unsigned long long)c->sp);
+        }
+    }
     Decode(c, insn, pc);
     if (c->halt == A64_OK) ++c->icount;
+    /* Debug: remember the first instruction that drove sp to (near) zero. */
+    if (c->sp_zero_pc == 0 && c->sp != prev_sp && c->sp < 0x1000)
+        c->sp_zero_pc = pc;
     return c->halt;
 }
 

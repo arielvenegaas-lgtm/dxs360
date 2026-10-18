@@ -81,7 +81,7 @@ int main(void) {
         uint8_t nso[512];
         uint64_t sz = build_nso(nso);
         CHECK(EmuCore_LoadNso(nso, (unsigned long)sz) == 1, "nso loads");
-        CHECK(EmuCore_Entry() == 0x1000u, "entry point");
+        CHECK(EmuCore_Entry() == EMU_CODE_BASE + 0x1000u, "entry point");
         int stopped = EmuCore_RunSlice(1000u);
         CHECK(stopped == 1, "slice stops on brk");
         CHECK(strcmp(EmuCore_HaltName(), "brk") == 0, "halt reason is brk");

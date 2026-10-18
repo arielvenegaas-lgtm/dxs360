@@ -68,6 +68,11 @@ typedef struct A64 {
      * complete; unmapped system registers read as 0 and writes are ignored. */
     uint64_t sysregs[64];
 
+    /* Thread-pointer system registers. The kernel sets TPIDRRO_EL0 (the
+     * read-only thread pointer) at thread creation; user code reads it
+     * directly and never writes it. TPIDR_EL0 is the writable variant. */
+    uint64_t tpidr_el0, tpidrro_el0;
+
     A64Halt  halt;
     uint64_t fault_addr;    /* address of the last memory fault        */
     uint64_t fault_size;    /* size in bytes of the last failed access */
@@ -77,6 +82,11 @@ typedef struct A64 {
 
     /* Instruction count executed since the last reset. */
     uint64_t icount;
+
+    /* Debug: PC of the instruction that first dropped sp to 0 (or below the
+     * stack region). Captured during the last run; 0 if never. */
+    uint64_t sp_zero_pc;
+    uint64_t sp_prev;
 
     /* Optional per-instruction hook. Return 0 to stop (STEPLIMIT). */
     int (*on_insn)(void *ctx, struct A64 *cpu, uint64_t pc, uint32_t insn);

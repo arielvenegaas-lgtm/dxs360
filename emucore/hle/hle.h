@@ -40,6 +40,10 @@ typedef struct HleState {
     uint64_t unknown_calls;  /* SVCs with no registered handler                */
     uint64_t last_unknown;   /* last unhandled call number                      */
     uint64_t last_imm;
+
+    /* X0..X7 as they were when the last unhandled SVC was issued: the exact
+     * arguments of the call the guest needs next. */
+    uint64_t last_args[8];
 } HleState;
 
 void Hle_Init(HleState *h);
